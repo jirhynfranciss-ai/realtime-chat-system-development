@@ -28,6 +28,8 @@ type Message = {
   timestamp: string;
   seen_status: boolean;
   edited_at?: string | null;
+  media_url?: string | null;
+  media_type?: "image" | "video" | null;
 };
 
 type OnlinePresence = {
@@ -115,6 +117,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isMediaUploading, setIsMediaUploading] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [loginRole, setLoginRole] = useState<Role>("user");
   const [authError, setAuthError] = useState("");
@@ -144,6 +147,9 @@ export default function App() {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [reminderInput, setReminderInput] = useState("");
   const [reminderDateTime, setReminderDateTime] = useState("");
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<string>("");
+  const [mobilePane, setMobilePane] = useState<"panel" | "chat">("chat");
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -197,6 +203,10 @@ export default function App() {
       return matchesText && matchesFavorite;
     });
   }, [messages, searchTerm, showFavoritesOnly, favoriteIds]);
+
+  const mediaMessages = useMemo(() => {
+    return messages.filter((entry) => Boolean(entry.media_url)).slice(-10).reverse();
+  }, [messages]);
 
   useEffect(() => {
     // Keep auth screen consistently dark while preserving user theme preference after login.
@@ -465,6 +475,14 @@ export default function App() {
   }, [messages, autoScroll]);
 
   useEffect(() => {
+    return () => {
+      if (mediaPreview) {
+        URL.revokeObjectURL(mediaPreview);
+      }
+    };
+  }, [mediaPreview]);
+
+  useEffect(() => {
     if (!session?.user.id || !activeRecipientId) {
       return;
     }
@@ -520,6 +538,14 @@ export default function App() {
     const key = `crushconnect-reminders:${session.user.id}`;
     window.localStorage.setItem(key, JSON.stringify(reminders));
   }, [reminders, session?.user.id]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      setMobilePane(selectedUserId ? "chat" : "panel");
+    } else {
+      setMobilePane("chat");
+    }
+  }, [isAdmin, selectedUserId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -624,12 +650,59 @@ export default function App() {
     }, 1200);
   };
 
+  const handlePickMedia = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+    const isAllowed = file.type.startsWith("image/") || file.type.startsWith("video/");
+    if (!isAllowed) {
+      setAuthError("Only image or video files are supported.");
+      return;
+    }
+    if (mediaPreview) {
+      URL.revokeObjectURL(mediaPreview);
+    }
+    setMediaFile(file);
+    setMediaPreview(URL.createObjectURL(file));
+    setAuthError("");
+    event.target.value = "";
+  };
+
+  const clearMediaDraft = () => {
+    if (mediaPreview) {
+      URL.revokeObjectURL(mediaPreview);
+    }
+    setMediaPreview("");
+    setMediaFile(null);
+  };
+
   const handleSendMessage = async () => {
-    if (!supabase || !session?.user.id || !activeRecipientId || !draft.trim()) {
+    if (!supabase || !session?.user.id || !activeRecipientId || (!draft.trim() && !mediaFile)) {
       return;
     }
 
-    const composedMessage = replyTo ? `Reply to: ${replyTo.message}\n${draft.trim()}` : draft.trim();
+    let mediaUrl: string | null = null;
+    let mediaType: "image" | "video" | null = null;
+
+    if (mediaFile) {
+      setIsMediaUploading(true);
+      const extension = mediaFile.name.split(".").pop() ?? "bin";
+      const path = `${session.user.id}/${Date.now()}-${crypto.randomUUID()}.${extension}`;
+      const { error: uploadError } = await supabase.storage.from("chat-media").upload(path, mediaFile, { upsert: false });
+      if (uploadError) {
+        setAuthError(uploadError.message);
+        setIsMediaUploading(false);
+        return;
+      }
+      const { data: publicData } = supabase.storage.from("chat-media").getPublicUrl(path);
+      mediaUrl = publicData.publicUrl;
+      mediaType = mediaFile.type.startsWith("video/") ? "video" : "image";
+      setIsMediaUploading(false);
+    }
+
+    const baseText = draft.trim() || (mediaUrl ? "Sent an attachment" : "");
+    const composedMessage = replyTo ? `Reply to: ${replyTo.message}\n${baseText}` : baseText;
 
     const payload = {
       sender_id: session.user.id,
@@ -637,6 +710,8 @@ export default function App() {
       message: composedMessage,
       timestamp: new Date().toISOString(),
       seen_status: false,
+      media_url: mediaUrl,
+      media_type: mediaType,
     };
 
     setDraft("");
@@ -653,6 +728,7 @@ export default function App() {
     if (data) {
       setMessages((prev) => (prev.some((entry) => entry.id === data.id) ? prev : [...prev, data]));
     }
+    clearMediaDraft();
     setReplyTo(null);
     setIsSending(false);
   };
@@ -747,12 +823,27 @@ export default function App() {
       return;
     }
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("messages")
       .update({ message: editingMessageText.trim(), edited_at: new Date().toISOString() })
       .eq("id", messageId)
       .select("*")
       .single<Message>();
+
+    if (error && error.message.includes("edited_at")) {
+      const fallback = await supabase
+        .from("messages")
+        .update({ message: editingMessageText.trim() })
+        .eq("id", messageId)
+        .select("*")
+        .single<Message>();
+      data = fallback.data;
+      error = fallback.error;
+      if (!fallback.error) {
+        setProfileStatus("Message edited. Run latest SQL to enable edited labels.");
+      }
+    }
+
     if (error) {
       setAuthError(error.message);
       return;
@@ -848,7 +939,8 @@ export default function App() {
     const content = messages
       .map((entry) => {
         const author = entry.sender_id === currentUserId ? "Me" : "Them";
-        return `[${formatDateTime(entry.timestamp)}] ${author}: ${entry.message}`;
+        const mediaPart = entry.media_url ? ` [${entry.media_type ?? "media"}: ${entry.media_url}]` : "";
+        return `[${formatDateTime(entry.timestamp)}] ${author}: ${entry.message}${mediaPart}`;
       })
       .join("\n");
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -1070,6 +1162,13 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <span className="hidden text-slate-500 md:inline">Online: {Object.keys(onlineUsers).length}</span>
             <button
               type="button"
+              onClick={() => setMobilePane((prev) => (prev === "chat" ? "panel" : "chat"))}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
+            >
+              {mobilePane === "chat" ? "Open Panel" : "Open Chat"}
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 void handleRequestNotifications();
               }}
@@ -1110,7 +1209,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
       </header>
 
       <div className="mx-auto grid max-w-7xl gap-0 md:grid-cols-[280px_1fr]">
-        <aside className="border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block`}>
           {isAdmin ? (
             <div className="space-y-4 p-4">
               <div>
@@ -1143,11 +1242,14 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     const isOnline = Boolean(onlineUsers[entry.user_id]);
                     const isSelected = selectedUserId === entry.user_id;
                     return (
-                      <motion.button
+                        <motion.button
                         whileHover={{ x: 3 }}
                         key={entry.user_id}
                         type="button"
-                        onClick={() => setSelectedUserId(entry.user_id)}
+                          onClick={() => {
+                            setSelectedUserId(entry.user_id);
+                            setMobilePane("chat");
+                          }}
                         className={`w-full rounded-lg border px-3 py-2 text-left ${
                           isSelected
                             ? "border-cyan-300 bg-cyan-50 dark:border-cyan-500/50 dark:bg-cyan-500/10"
@@ -1229,6 +1331,23 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </div>
               </div>
 
+              {mediaMessages.length > 0 && (
+                <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+                  <h3 className="text-sm font-semibold">Recent Media</h3>
+                  <div className="grid grid-cols-3 gap-2">
+                    {mediaMessages.map((entry) => (
+                      <a key={entry.id} href={entry.media_url ?? "#"} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
+                        {entry.media_type === "video" ? (
+                          <video src={entry.media_url ?? undefined} className="h-16 w-full object-cover" muted />
+                        ) : (
+                          <img src={entry.media_url ?? undefined} alt="Shared media" className="h-16 w-full object-cover" loading="lazy" />
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {showProfilePanel && (
                 <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
                 <h3 className="text-sm font-semibold">My Profile</h3>
@@ -1292,12 +1411,28 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   ))}
                 </div>
               </div>
+              {mediaMessages.length > 0 && (
+                <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                  <h3 className="text-sm font-semibold">Recent Media</h3>
+                  <div className="grid grid-cols-3 gap-2">
+                    {mediaMessages.map((entry) => (
+                      <a key={entry.id} href={entry.media_url ?? "#"} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
+                        {entry.media_type === "video" ? (
+                          <video src={entry.media_url ?? undefined} className="h-14 w-full object-cover" muted />
+                        ) : (
+                          <img src={entry.media_url ?? undefined} alt="Shared media" className="h-14 w-full object-cover" loading="lazy" />
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
               {profileStatus && <p className="text-xs text-slate-500">{profileStatus}</p>}
             </div>
           )}
         </aside>
 
-        <section className="flex min-h-[calc(100vh-65px)] flex-col">
+        <section className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-[calc(100vh-65px)] flex-col md:flex`}>
           <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
             <div className="flex items-center justify-between">
               <div>
@@ -1316,6 +1451,14 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                       : "No recipient available yet."}
                 </p>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setMobilePane("panel")}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
+              >
+                Back
+              </button>
 
               <div className="flex items-center gap-2">
                 <button
@@ -1410,7 +1553,17 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                           </div>
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap">{entry.message}</p>
+                        <div className="space-y-2">
+                          {entry.media_url && entry.media_type === "image" && (
+                            <a href={entry.media_url} target="_blank" rel="noreferrer">
+                              <img src={entry.media_url} alt="Shared attachment" className="max-h-72 w-full rounded-xl object-cover" loading="lazy" />
+                            </a>
+                          )}
+                          {entry.media_url && entry.media_type === "video" && (
+                            <video src={entry.media_url} controls className="max-h-72 w-full rounded-xl object-cover" />
+                          )}
+                          <p className="whitespace-pre-wrap">{entry.message}</p>
+                        </div>
                       )}
                       <div className="mt-1 flex items-center justify-between gap-3 text-[11px] opacity-80">
                         <span>
@@ -1503,6 +1656,21 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </button>
               </div>
             )}
+            {mediaPreview && (
+              <div className="mb-2 rounded-lg border border-slate-300 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/60">
+                <div className="mb-2 flex items-center justify-between text-xs">
+                  <span>{mediaFile?.name}</span>
+                  <button type="button" onClick={clearMediaDraft} className="underline underline-offset-2">
+                    Remove
+                  </button>
+                </div>
+                {mediaFile?.type.startsWith("video/") ? (
+                  <video src={mediaPreview} controls className="max-h-60 w-full rounded-lg object-cover" />
+                ) : (
+                  <img src={mediaPreview} alt="Media preview" className="max-h-60 w-full rounded-lg object-cover" />
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <textarea
                 value={draft}
@@ -1517,17 +1685,21 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 disabled={!activeRecipientId}
                 className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700"
               />
+              <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-xs dark:border-slate-700">
+                Media
+                <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
+              </label>
               <button
                 type="button"
-                disabled={!activeRecipientId}
+                disabled={!activeRecipientId || isMediaUploading}
                 onClick={() => {
                   void handleSendMessage();
                 }}
                 className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
               >
-                {isSending ? (
+                {isSending || isMediaUploading ? (
                   <span className="inline-flex items-center gap-2">
-                    Sending
+                    {isMediaUploading ? "Uploading" : "Sending"}
                     <JumpingDots />
                   </span>
                 ) : (
