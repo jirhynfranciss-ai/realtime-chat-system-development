@@ -1105,6 +1105,52 @@ export default function App() {
     await supabase.auth.signOut();
   };
 
+  const selectedUser = useMemo(
+    () => profiles.find((entry) => entry.user_id === selectedUserId) ?? null,
+    [profiles, selectedUserId],
+  );
+
+  const adminStats = useMemo(() => {
+    const users = profiles.filter((entry) => entry.role === "user");
+    const online = users.filter((entry) => Boolean(onlineUsers[entry.user_id])).length;
+    const blocked = users.filter((entry) => Boolean(entry.blocked)).length;
+    const unread = Object.values(unreadByUser).reduce((sum, value) => sum + value, 0);
+    return { totalUsers: users.length, online, blocked, unread };
+  }, [profiles, onlineUsers, unreadByUser]);
+
+  useEffect(() => {
+    if (!selectedUser) {
+      setManagedProfileDraft({
+        full_name: "",
+        nickname: "",
+        interests: "",
+        hobbies: "",
+        favorite_color: "",
+        favorite_food: "",
+        bio: "",
+      });
+      return;
+    }
+    setManagedProfileDraft({
+      full_name: selectedUser.full_name ?? "",
+      nickname: selectedUser.nickname ?? "",
+      interests: selectedUser.interests ?? "",
+      hobbies: selectedUser.hobbies ?? "",
+      favorite_color: selectedUser.favorite_color ?? "",
+      favorite_food: selectedUser.favorite_food ?? "",
+      bio: selectedUser.bio ?? "",
+    });
+  }, [selectedUser]);
+
+  const typingNames = Object.values(typingStatus).join(", ");
+  const enterTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.45, ease: "easeOut" as const };
+  const panelMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, x: 0 }, animate: { opacity: 1, x: 0 } }
+    : { initial: { opacity: 0, x: -18 }, animate: { opacity: 1, x: 0 } };
+  const chatMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, y: 0 }, animate: { opacity: 1, y: 0 } }
+    : { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 } };
+
   if (!configured) {
     return (
       <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
@@ -1256,48 +1302,6 @@ VITE_ADMIN_EMAIL=your_admin_email`}
       </main>
     );
   }
-
-  const selectedUser = profiles.find((entry) => entry.user_id === selectedUserId);
-  const adminStats = useMemo(() => {
-    const users = profiles.filter((entry) => entry.role === "user");
-    const online = users.filter((entry) => Boolean(onlineUsers[entry.user_id])).length;
-    const blocked = users.filter((entry) => Boolean(entry.blocked)).length;
-    const unread = Object.values(unreadByUser).reduce((sum, value) => sum + value, 0);
-    return { totalUsers: users.length, online, blocked, unread };
-  }, [profiles, onlineUsers, unreadByUser]);
-
-  useEffect(() => {
-    if (!selectedUser) {
-      setManagedProfileDraft({
-        full_name: "",
-        nickname: "",
-        interests: "",
-        hobbies: "",
-        favorite_color: "",
-        favorite_food: "",
-        bio: "",
-      });
-      return;
-    }
-    setManagedProfileDraft({
-      full_name: selectedUser.full_name ?? "",
-      nickname: selectedUser.nickname ?? "",
-      interests: selectedUser.interests ?? "",
-      hobbies: selectedUser.hobbies ?? "",
-      favorite_color: selectedUser.favorite_color ?? "",
-      favorite_food: selectedUser.favorite_food ?? "",
-      bio: selectedUser.bio ?? "",
-    });
-  }, [selectedUser?.user_id]);
-
-  const typingNames = Object.values(typingStatus).join(", ");
-  const enterTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.45, ease: "easeOut" as const };
-  const panelMotion = prefersReducedMotion
-    ? { initial: { opacity: 1, x: 0 }, animate: { opacity: 1, x: 0 } }
-    : { initial: { opacity: 0, x: -18 }, animate: { opacity: 1, x: 0 } };
-  const chatMotion = prefersReducedMotion
-    ? { initial: { opacity: 1, y: 0 }, animate: { opacity: 1, y: 0 } }
-    : { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 } };
 
   return (
     <main className="relative min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
