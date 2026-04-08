@@ -3,6 +3,145 @@
 /* Use class-based dark mode so in-app theme toggle applies instantly. */
 @custom-variant dark (&:is(.dark *));
 
+:root {
+  --bg-light: #f4f8ff;
+  --bg-dark: #020617;
+  --text-light: #0f172a;
+  --text-dark: #e2e8f0;
+  --brand-a: #22d3ee;
+  --brand-b: #6366f1;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  color: var(--text-light);
+  background:
+    radial-gradient(1200px 800px at 12% 8%, rgb(56 189 248 / 0.12), transparent 55%),
+    radial-gradient(1000px 700px at 88% 14%, rgb(99 102 241 / 0.1), transparent 52%),
+    linear-gradient(180deg, #f8fbff 0%, var(--bg-light) 50%, #eef4ff 100%);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dark body {
+  color: var(--text-dark);
+  background:
+    radial-gradient(1200px 900px at 15% 10%, rgb(34 211 238 / 0.12), transparent 48%),
+    radial-gradient(1000px 800px at 85% 16%, rgb(99 102 241 / 0.16), transparent 45%),
+    linear-gradient(180deg, #020617 0%, #0b1220 55%, #111b2f 100%);
+}
+
+/* Subtle ambient overlay for a premium look without visual clutter. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.35;
+  background-image: radial-gradient(rgb(15 23 42 / 0.08) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.dark body::before {
+  opacity: 0.2;
+  background-image: radial-gradient(rgb(148 163 184 / 0.12) 1px, transparent 1px);
+}
+
+::selection {
+  background: rgb(34 211 238 / 0.28);
+  color: inherit;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 163 184 / 0.6) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: rgb(148 163 184 / 0.55);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(100 116 139 / 0.8);
+}
+
+button,
+input,
+textarea,
+select {
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+button:active {
+  transform: translateY(1px) scale(0.995);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  box-shadow:
+    0 0 0 1px rgb(34 211 238 / 0.35),
+    0 0 0 4px rgb(34 211 238 / 0.12);
+}
+
+@layer utilities {
+  .aura-border {
+    position: relative;
+    border: 1px solid rgb(148 163 184 / 0.35);
+    box-shadow:
+      0 0 0 1px rgb(255 255 255 / 0.2) inset,
+      0 16px 48px rgb(15 23 42 / 0.18);
+  }
+
+  .dark .aura-border {
+    border-color: rgb(100 116 139 / 0.45);
+    box-shadow:
+      0 0 0 1px rgb(148 163 184 / 0.08) inset,
+      0 22px 60px rgb(2 6 23 / 0.55);
+  }
+
+  .glass-soft {
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.8), rgb(255 255 255 / 0.62));
+    backdrop-filter: blur(14px);
+  }
+
+  .dark .glass-soft {
+    background: linear-gradient(180deg, rgb(15 23 42 / 0.65), rgb(2 6 23 / 0.55));
+  }
+
+  .gradient-text {
+    background: linear-gradient(120deg, var(--brand-a), var(--brand-b));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
 @keyframes dot-jump {
   0%,
   80%,
