@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createClient, type RealtimeChannel, type Session } from "@supabase/supabase-js";
 
 type Role = "admin" | "user";
@@ -96,6 +96,7 @@ function isSingleRowCoerceError(message: string) {
 }
 
 export default function App() {
+  const prefersReducedMotion = useReducedMotion();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") {
       return "light";
@@ -161,6 +162,7 @@ export default function App() {
   const currentUserId = session?.user.id ?? "";
   const activeAdminProfile = profiles.find((entry) => entry.role === "admin");
   const activeRecipientId = isAdmin ? selectedUserId : activeAdminProfile?.user_id ?? "";
+  const isUserBlocked = !isAdmin && Boolean(profile?.blocked);
 
   const totalUnread = useMemo(() => {
     return Object.values(unreadByUser).reduce((sum, count) => sum + count, 0);
@@ -355,6 +357,27 @@ export default function App() {
       return;
     }
 
+    const profileChannel = supabase
+      .channel(`realtime:profiles:${session.user.id}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, (payload) => {
+        const updatedProfile = payload.new as Profile;
+        setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
+        if (updatedProfile.user_id === session.user.id) {
+          setProfile((prev) => (prev ? { ...prev, ...updatedProfile } : updatedProfile));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(profileChannel);
+    };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!supabase || !session?.user.id) {
+      return;
+    }
+
     const channel = supabase
       .channel(`realtime:messages:${session.user.id}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => {
@@ -394,6 +417,10 @@ export default function App() {
         const updated = payload.new as Message;
         setMessages((prev) => prev.map((msg) => (msg.id === updated.id ? updated : msg)));
       })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, (payload) => {
+        const deleted = payload.old as Message;
+        setMessages((prev) => prev.filter((msg) => msg.id !== deleted.id));
+      })
       .subscribe();
 
     return () => {
@@ -407,6 +434,8 @@ export default function App() {
       return;
     }
 
+    let cancelled = false;
+
     const loadMessages = async () => {
       setIsMessagesLoading(true);
       const { data, error } = await supabase
@@ -419,12 +448,16 @@ export default function App() {
 
       if (error) {
         setAuthError(error.message);
-        setIsMessagesLoading(false);
+        if (!cancelled) {
+          setIsMessagesLoading(false);
+        }
         return;
       }
 
-      setMessages((data ?? []) as Message[]);
-      setUnreadByUser((prev) => ({ ...prev, [activeRecipientId]: 0 }));
+      if (!cancelled) {
+        setMessages((data ?? []) as Message[]);
+        setUnreadByUser((prev) => ({ ...prev, [activeRecipientId]: 0 }));
+      }
 
       await supabase
         .from("messages")
@@ -432,10 +465,16 @@ export default function App() {
         .eq("receiver_id", session.user.id)
         .eq("sender_id", activeRecipientId)
         .eq("seen_status", false);
-      setIsMessagesLoading(false);
+
+      if (!cancelled) {
+        setIsMessagesLoading(false);
+      }
     };
 
     void loadMessages();
+    return () => {
+      cancelled = true;
+    };
   }, [session?.user.id, activeRecipientId]);
 
   useEffect(() => {
@@ -477,6 +516,18 @@ export default function App() {
       messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, autoScroll]);
+
+  useEffect(() => {
+    setTypingStatus({});
+  }, [activeRecipientId]);
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -679,7 +730,7 @@ export default function App() {
   };
 
   const handleSendMessage = async () => {
-    if (!supabase || !session?.user.id || !activeRecipientId || (!draft.trim() && !mediaFile)) {
+    if (!supabase || !session?.user.id || !activeRecipientId || isUserBlocked || (!draft.trim() && !mediaFile)) {
       return;
     }
 
@@ -1168,15 +1219,24 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
   const selectedUser = profiles.find((entry) => entry.user_id === selectedUserId);
   const typingNames = Object.values(typingStatus).join(", ");
+  const enterTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.45, ease: "easeOut" as const };
+  const panelMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, x: 0 }, animate: { opacity: 1, x: 0 } }
+    : { initial: { opacity: 0, x: -18 }, animate: { opacity: 1, x: 0 } };
+  const chatMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, y: 0 }, animate: { opacity: 1, y: 0 } }
+    : { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 } };
 
   return (
-    <main className="min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
+    <main className="relative min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
+      <div className="pointer-events-none absolute -left-20 top-16 h-56 w-56 rounded-full bg-cyan-400/20 blur-3xl dark:bg-cyan-400/15" />
+      <div className="pointer-events-none absolute -right-24 top-24 h-64 w-64 rounded-full bg-indigo-400/20 blur-3xl dark:bg-indigo-400/20" />
       <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/75">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6">
-          <div>
+          <motion.div initial={prefersReducedMotion ? false : { opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={enterTransition}>
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-500">CrushConnect</p>
             <h1 className="text-lg font-semibold">{isAdmin ? "Admin Console" : "Private Chat"}</h1>
-          </div>
+          </motion.div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
             <span className="rounded-full border border-cyan-400/40 px-3 py-1 capitalize">{profile.role}</span>
@@ -1234,7 +1294,12 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
       <div className={`mx-auto grid max-w-7xl gap-0 ${isAdmin ? "md:grid-cols-[340px_minmax(0,1fr)]" : "md:grid-cols-1"}`}>
         {isAdmin && (
-          <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/75 md:block`}>
+          <motion.aside
+            initial={panelMotion.initial}
+            animate={panelMotion.animate}
+            transition={enterTransition}
+            className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/75 md:block`}
+          >
             <div className="space-y-4 p-4">
               <div>
                 <h2 className="text-sm font-semibold">Users</h2>
@@ -1268,6 +1333,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     return (
                         <motion.button
                         whileHover={{ x: 3 }}
+                        whileTap={{ scale: 0.99 }}
                         key={entry.user_id}
                         type="button"
                           onClick={() => {
@@ -1388,10 +1454,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </div>
               )}
             </div>
-          </aside>
+          </motion.aside>
         )}
 
-        <section className={`${isAdmin ? (mobilePane === "chat" ? "flex" : "hidden") : "flex"} h-[calc(100dvh-70px)] min-w-0 flex-col md:h-[calc(100dvh-69px)] md:flex`}>
+        <motion.section
+          initial={chatMotion.initial}
+          animate={chatMotion.animate}
+          transition={enterTransition}
+          className={`${isAdmin ? (mobilePane === "chat" ? "flex" : "hidden") : "flex"} h-[calc(100dvh-70px)] min-w-0 flex-col md:h-[calc(100dvh-69px)] md:flex`}
+        >
           <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
             <div className="flex items-center justify-between">
               <div>
@@ -1403,7 +1474,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     : `Chat with ${profiles.find((entry) => entry.role === "admin")?.nickname || "Admin"}`}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  {activeRecipientId && onlineUsers[activeRecipientId]
+                  {isUserBlocked
+                    ? "Your account is currently blocked. Contact admin for access."
+                    : activeRecipientId && onlineUsers[activeRecipientId]
                     ? "Online now"
                     : activeRecipientId
                       ? "Offline now. You can still send messages."
@@ -1517,9 +1590,11 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 return (
                   <motion.div
                     key={entry.id}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -6 }}
+                    layout
+                    initial={prefersReducedMotion ? { opacity: 1 } : { opacity: 0, y: 12, scale: 0.99 }}
+                    animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+                    exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.98 }}
+                    transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.24, ease: "easeOut" }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
                     <div className={`max-w-[94%] rounded-2xl px-3 py-2 text-sm shadow-[0_8px_24px_-18px_rgba(15,23,42,0.9)] md:max-w-[76%] md:px-4 ${mine ? "bg-gradient-to-br from-cyan-400 to-cyan-500 text-slate-950" : "bg-white/95 dark:bg-slate-800/95"}`}>
@@ -1610,8 +1685,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={prompt}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(prompt)}
-                  className="shrink-0 rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 dark:border-cyan-600/40 dark:text-cyan-300"
+                  className="shrink-0 rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-cyan-600/40 dark:text-cyan-300"
                 >
                   {prompt}
                 </button>
@@ -1620,8 +1696,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={entry}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(entry)}
-                  className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700"
+                  className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700"
                 >
                   {entry}
                 </button>
@@ -1630,8 +1707,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={emoji}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(`${draft}${emoji}`)}
-                  className="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm dark:border-slate-700"
+                  className="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700"
                 >
                   {emoji}
                 </button>
@@ -1671,17 +1749,17 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   }
                 }}
                 placeholder={activeRecipientId ? "Type your message..." : "Select a conversation"}
-                disabled={!activeRecipientId}
+                disabled={!activeRecipientId || isUserBlocked}
                 className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700 sm:h-20"
               />
               <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center sm:justify-end">
-                <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-center text-xs dark:border-slate-700">
+                <label className={`rounded-lg border border-slate-300 px-3 py-2 text-center text-xs dark:border-slate-700 ${isUserBlocked ? "cursor-not-allowed opacity-45" : "cursor-pointer"}`}>
                   Media
-                  <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
+                  <input type="file" accept="image/*,video/*" onChange={handlePickMedia} disabled={isUserBlocked} className="hidden" />
                 </label>
                 <button
                   type="button"
-                  disabled={!activeRecipientId || isMediaUploading}
+                  disabled={!activeRecipientId || isMediaUploading || isUserBlocked}
                   onClick={() => {
                     void handleSendMessage();
                   }}
@@ -1702,7 +1780,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             {profileStatus && <p className="mt-1 text-xs text-cyan-600 dark:text-cyan-300">{profileStatus}</p>}
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
           </div>
-        </section>
+        </motion.section>
       </div>
 
       {!isAdmin && showProfilePanel && (
