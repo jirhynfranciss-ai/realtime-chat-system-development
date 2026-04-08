@@ -16,8 +16,10 @@ type Profile = {
   bio: string | null;
   favorite_color: string | null;
   favorite_food: string | null;
+  avatar_url?: string | null;
   blocked?: boolean;
   created_at?: string;
+  updated_at?: string;
 };
 
 type Message = {
@@ -43,6 +45,18 @@ type ReminderItem = {
   text: string;
   dueAt: string;
   done: boolean;
+};
+
+type UserSort = "active" | "newest" | "name";
+
+type ManagedProfileDraft = {
+  full_name: string;
+  nickname: string;
+  interests: string;
+  hobbies: string;
+  favorite_color: string;
+  favorite_food: string;
+  bio: string;
 };
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -138,6 +152,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [userFilter, setUserFilter] = useState<"all" | "online" | "unread">("all");
+  const [userSort, setUserSort] = useState<UserSort>("active");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
@@ -153,6 +168,18 @@ export default function App() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string>("");
   const [mobilePane, setMobilePane] = useState<"panel" | "chat">("chat");
+  const [autoWelcomeEnabled, setAutoWelcomeEnabled] = useState(true);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [isSavingManagedUser, setIsSavingManagedUser] = useState(false);
+  const [managedProfileDraft, setManagedProfileDraft] = useState<ManagedProfileDraft>({
+    full_name: "",
+    nickname: "",
+    interests: "",
+    hobbies: "",
+    favorite_color: "",
+    favorite_food: "",
+    bio: "",
+  });
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -170,7 +197,7 @@ export default function App() {
 
   const visibleUsers = useMemo(() => {
     const base = profiles.filter((entry) => entry.role === "user");
-    return base
+    const filtered = base
       .filter((entry) => {
         if (userFilter === "online") {
           return Boolean(onlineUsers[entry.user_id]);
@@ -184,7 +211,23 @@ export default function App() {
         const target = `${entry.nickname ?? ""} ${entry.full_name ?? ""} ${entry.email ?? ""}`.toLowerCase();
         return target.includes(userSearch.trim().toLowerCase());
       });
-  }, [profiles, userFilter, unreadByUser, userSearch, onlineUsers]);
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (userSort === "newest") {
+        return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime();
+      }
+      if (userSort === "name") {
+        const aName = `${a.nickname ?? ""}${a.full_name ?? ""}`.trim().toLowerCase();
+        const bName = `${b.nickname ?? ""}${b.full_name ?? ""}`.trim().toLowerCase();
+        return aName.localeCompare(bName);
+      }
+      const aScore = (unreadByUser[a.user_id] ?? 0) + (onlineUsers[a.user_id] ? 2 : 0);
+      const bScore = (unreadByUser[b.user_id] ?? 0) + (onlineUsers[b.user_id] ? 2 : 0);
+      return bScore - aScore;
+    });
+
+    return sorted;
+  }, [profiles, userFilter, unreadByUser, userSearch, onlineUsers, userSort]);
 
   const messageStats = useMemo(() => {
     const words = messages.reduce((sum, entry) => sum + entry.message.trim().split(/\s+/).filter(Boolean).length, 0);
@@ -274,6 +317,7 @@ export default function App() {
       const existing = ((data ?? []) as Profile[])[0];
       if (existing) {
         setProfile(existing);
+        setActivityLogs((prev) => [`Login success at ${formatDateTime(new Date().toISOString())}`, ...prev].slice(0, 8));
         setFullName(existing.full_name ?? "");
         setNickname(existing.nickname ?? "");
         setInterests(existing.interests ?? "");
@@ -476,6 +520,36 @@ export default function App() {
       cancelled = true;
     };
   }, [session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!supabase || !isAdmin || !session?.user.id || !selectedUserId || !autoWelcomeEnabled || isMessagesLoading) {
+      return;
+    }
+    if (messages.length > 0) {
+      return;
+    }
+
+    const key = `crushconnect-welcomed:${session.user.id}`;
+    const welcomed = JSON.parse(window.localStorage.getItem(key) ?? "[]") as string[];
+    if (welcomed.includes(selectedUserId)) {
+      return;
+    }
+
+    const sendAutoWelcome = async () => {
+      const { error } = await supabase.from("messages").insert({
+        sender_id: session.user.id,
+        receiver_id: selectedUserId,
+        message: "Hi and welcome. I am glad you are here. Feel free to share your day.",
+        timestamp: new Date().toISOString(),
+        seen_status: false,
+      });
+      if (!error) {
+        window.localStorage.setItem(key, JSON.stringify([...welcomed, selectedUserId]));
+      }
+    };
+
+    void sendAutoWelcome();
+  }, [supabase, isAdmin, session?.user.id, selectedUserId, autoWelcomeEnabled, isMessagesLoading, messages.length]);
 
   useEffect(() => {
     if (!supabase || !session?.user.id || !activeRecipientId) {
@@ -825,6 +899,61 @@ export default function App() {
     setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
     setProfileStatus("Profile updated.");
     setAuthError("");
+  };
+
+  const handleProfileAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!supabase || !profile) {
+      return;
+    }
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setAuthError("Profile picture must be an image.");
+      return;
+    }
+
+    setIsAvatarUploading(true);
+    const extension = file.name.split(".").pop() ?? "png";
+    const path = `${profile.user_id}/avatar-${Date.now()}.${extension}`;
+    const { error: uploadError } = await supabase.storage.from("chat-media").upload(path, file, { upsert: true });
+    if (uploadError) {
+      setAuthError(uploadError.message);
+      setIsAvatarUploading(false);
+      return;
+    }
+
+    const { data: publicData } = supabase.storage.from("chat-media").getPublicUrl(path);
+    const avatarUrl = publicData.publicUrl;
+    const { error: updateError } = await supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("user_id", profile.user_id);
+    if (updateError) {
+      setAuthError(updateError.message);
+      setIsAvatarUploading(false);
+      return;
+    }
+
+    setProfile((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev));
+    setProfiles((prev) => prev.map((entry) => (entry.user_id === profile.user_id ? { ...entry, avatar_url: avatarUrl } : entry)));
+    setProfileStatus("Profile picture updated.");
+    setIsAvatarUploading(false);
+    event.target.value = "";
+  };
+
+  const handleAdminSaveManagedUser = async () => {
+    if (!supabase || !selectedUser) {
+      return;
+    }
+    setIsSavingManagedUser(true);
+    const { error } = await supabase.from("profiles").update(managedProfileDraft).eq("user_id", selectedUser.user_id);
+    if (error) {
+      setAuthError(error.message);
+      setIsSavingManagedUser(false);
+      return;
+    }
+    setProfiles((prev) => prev.map((entry) => (entry.user_id === selectedUser.user_id ? { ...entry, ...managedProfileDraft } : entry)));
+    setProfileStatus("User profile updated by admin.");
+    setIsSavingManagedUser(false);
   };
 
   const handleToggleBlocked = async (userId: string, blocked: boolean) => {
@@ -1218,6 +1347,38 @@ VITE_ADMIN_EMAIL=your_admin_email`}
   }
 
   const selectedUser = profiles.find((entry) => entry.user_id === selectedUserId);
+  const adminStats = useMemo(() => {
+    const users = profiles.filter((entry) => entry.role === "user");
+    const online = users.filter((entry) => Boolean(onlineUsers[entry.user_id])).length;
+    const blocked = users.filter((entry) => Boolean(entry.blocked)).length;
+    const unread = Object.values(unreadByUser).reduce((sum, value) => sum + value, 0);
+    return { totalUsers: users.length, online, blocked, unread };
+  }, [profiles, onlineUsers, unreadByUser]);
+
+  useEffect(() => {
+    if (!selectedUser) {
+      setManagedProfileDraft({
+        full_name: "",
+        nickname: "",
+        interests: "",
+        hobbies: "",
+        favorite_color: "",
+        favorite_food: "",
+        bio: "",
+      });
+      return;
+    }
+    setManagedProfileDraft({
+      full_name: selectedUser.full_name ?? "",
+      nickname: selectedUser.nickname ?? "",
+      interests: selectedUser.interests ?? "",
+      hobbies: selectedUser.hobbies ?? "",
+      favorite_color: selectedUser.favorite_color ?? "",
+      favorite_food: selectedUser.favorite_food ?? "",
+      bio: selectedUser.bio ?? "",
+    });
+  }, [selectedUser?.user_id]);
+
   const typingNames = Object.values(typingStatus).join(", ");
   const enterTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.45, ease: "easeOut" as const };
   const panelMotion = prefersReducedMotion
@@ -1306,6 +1467,25 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <p className="text-xs text-slate-500">Manage access and open private chats.</p>
               </div>
 
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Total Users</p>
+                  <p className="text-base font-semibold">{adminStats.totalUsers}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Online</p>
+                  <p className="text-base font-semibold">{adminStats.online}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Blocked</p>
+                  <p className="text-base font-semibold">{adminStats.blocked}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Unread</p>
+                  <p className="text-base font-semibold">{adminStats.unread}</p>
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <input
                   value={userSearch}
@@ -1324,6 +1504,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     Unread
                   </button>
                 </div>
+                <select
+                  value={userSort}
+                  onChange={(event) => setUserSort(event.target.value as UserSort)}
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                >
+                  <option value="active">Sort: Active</option>
+                  <option value="newest">Sort: Newest</option>
+                  <option value="name">Sort: Name</option>
+                </select>
               </div>
 
               <div className="space-y-2">
@@ -1346,9 +1535,18 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                             : "border-slate-200 dark:border-slate-700"
                         }`}
                       >
-                        <div className="flex items-center justify-between text-sm font-medium">
-                          <span>{entry.nickname || entry.full_name || "Unnamed"}</span>
-                          <span className={`h-2.5 w-2.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-slate-400"}`} />
+                        <div className="flex items-center justify-between gap-2 text-sm font-medium">
+                          <span className="flex min-w-0 items-center gap-2">
+                            {entry.avatar_url ? (
+                              <img src={entry.avatar_url} alt="avatar" className="h-7 w-7 rounded-full object-cover" loading="lazy" />
+                            ) : (
+                              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-[10px] font-semibold text-cyan-700 dark:text-cyan-300">
+                                {(entry.nickname || entry.full_name || "U").slice(0, 1).toUpperCase()}
+                              </span>
+                            )}
+                            <span className="truncate">{entry.nickname || entry.full_name || "Unnamed"}</span>
+                          </span>
+                          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${isOnline ? "bg-emerald-400" : "bg-slate-400"}`} />
                         </div>
                         <div className="mt-1 text-xs text-slate-500">{entry.email}</div>
                         {(unreadByUser[entry.user_id] ?? 0) > 0 && <div className="mt-1 text-xs text-cyan-600">{unreadByUser[entry.user_id]} unread</div>}
@@ -1359,6 +1557,28 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
               {selectedUser && (
                 <div className="space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-slate-800">
+                  <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Manage User Information</p>
+                  <input
+                    value={managedProfileDraft.full_name}
+                    onChange={(event) => setManagedProfileDraft((prev) => ({ ...prev, full_name: event.target.value }))}
+                    placeholder="Full name"
+                    className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                  />
+                  <input
+                    value={managedProfileDraft.nickname}
+                    onChange={(event) => setManagedProfileDraft((prev) => ({ ...prev, nickname: event.target.value }))}
+                    placeholder="Nickname"
+                    className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleAdminSaveManagedUser();
+                    }}
+                    className="w-full rounded-lg border border-indigo-300 px-3 py-2 text-indigo-700 dark:border-indigo-500/40 dark:text-indigo-300"
+                  >
+                    {isSavingManagedUser ? "Saving..." : "Save User Profile"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleToggleBlocked(selectedUser.user_id, Boolean(selectedUser.blocked))}
@@ -1381,6 +1601,13 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
                   >
                     Send Welcome Message
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAutoWelcomeEnabled((prev) => !prev)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-700 dark:border-slate-700 dark:text-slate-300"
+                  >
+                    Auto Welcome: {autoWelcomeEnabled ? "On" : "Off"}
                   </button>
                 </div>
               )}
@@ -1441,6 +1668,19 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               {showProfilePanel && (
                 <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
                 <h3 className="text-sm font-semibold">My Profile</h3>
+                <div className="flex items-center gap-3 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  {profile.avatar_url ? (
+                    <img src={profile.avatar_url} alt="My avatar" className="h-12 w-12 rounded-full object-cover" loading="lazy" />
+                  ) : (
+                    <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-cyan-500/20 text-sm font-semibold text-cyan-700 dark:text-cyan-300">
+                      {(nickname || fullName || "U").slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <label className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700">
+                    {isAvatarUploading ? "Uploading..." : "Upload Photo"}
+                    <input type="file" accept="image/*" onChange={handleProfileAvatarUpload} className="hidden" />
+                  </label>
+                </div>
                 <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
                 <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
                 <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
@@ -1796,6 +2036,19 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </button>
             </div>
             <div className="space-y-2">
+              <div className="flex items-center gap-3 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                {profile.avatar_url ? (
+                  <img src={profile.avatar_url} alt="My avatar" className="h-14 w-14 rounded-full object-cover" loading="lazy" />
+                ) : (
+                  <span className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan-500/20 text-base font-semibold text-cyan-700 dark:text-cyan-300">
+                    {(nickname || fullName || "U").slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <label className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700">
+                  {isAvatarUploading ? "Uploading..." : "Upload Profile Picture"}
+                  <input type="file" accept="image/*" onChange={handleProfileAvatarUpload} className="hidden" />
+                </label>
+              </div>
               <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
               <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
               <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
