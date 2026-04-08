@@ -43,6 +43,12 @@ const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.toL
 const supabase = configured ? createClient(supabaseUrl!, supabaseAnonKey!) : null;
 
 const emojiReactions = ["❤️", "😊", "🔥", "👍", "😂"];
+const quickIcebreakers = [
+  "How was your day so far?",
+  "What made you smile today?",
+  "What is your current favorite song?",
+  "If we plan a chill day, what should we do first?",
+];
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -113,6 +119,7 @@ export default function App() {
   const [favoriteColor, setFavoriteColor] = useState("");
   const [bio, setBio] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -126,6 +133,14 @@ export default function App() {
   const totalUnread = useMemo(() => {
     return Object.values(unreadByUser).reduce((sum, count) => sum + count, 0);
   }, [unreadByUser]);
+
+  const filteredMessages = useMemo(() => {
+    if (!searchTerm.trim()) {
+      return messages;
+    }
+    const query = searchTerm.trim().toLowerCase();
+    return messages.filter((entry) => entry.message.toLowerCase().includes(query));
+  }, [messages, searchTerm]);
 
   useEffect(() => {
     // Keep auth screen consistently dark while preserving user theme preference after login.
@@ -191,30 +206,7 @@ export default function App() {
         return;
       }
 
-      const newRole: Role = adminEmail && session.user.email?.toLowerCase() === adminEmail ? "admin" : "user";
-      const { data: created, error: createError } = await supabase
-        .from("profiles")
-        .insert({
-          user_id: session.user.id,
-          email: session.user.email,
-          role: newRole,
-          full_name: session.user.user_metadata.full_name ?? "",
-          nickname: session.user.user_metadata.nickname ?? "",
-          interests: session.user.user_metadata.interests ?? "",
-          hobbies: session.user.user_metadata.hobbies ?? "",
-          favorite_food: "",
-          favorite_color: "",
-          bio: "",
-          blocked: false,
-        })
-        .select("*")
-        .single<Profile>();
-
-      if (createError) {
-        setAuthError(createError.message);
-      } else {
-        setProfile(created);
-      }
+      setAuthError("Profile is still being prepared. Please wait a moment then log in again.");
     };
 
     void ensureProfile();
@@ -402,6 +394,27 @@ export default function App() {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    if (!session?.user.id || !activeRecipientId) {
+      return;
+    }
+    const key = `crushconnect-draft:${session.user.id}:${activeRecipientId}`;
+    const saved = window.localStorage.getItem(key);
+    setDraft(saved ?? "");
+  }, [session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!session?.user.id || !activeRecipientId) {
+      return;
+    }
+    const key = `crushconnect-draft:${session.user.id}:${activeRecipientId}`;
+    if (draft.trim()) {
+      window.localStorage.setItem(key, draft);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  }, [draft, session?.user.id, activeRecipientId]);
+
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!supabase) {
@@ -585,8 +598,8 @@ export default function App() {
     }
   };
 
-  const handleDeleteMessage = async (messageId: string) => {
-    if (!supabase || !isAdmin) {
+  const handleDeleteMessage = async (messageId: string, canDelete: boolean) => {
+    if (!supabase || !canDelete) {
       return;
     }
 
@@ -596,6 +609,25 @@ export default function App() {
       return;
     }
     setMessages((prev) => prev.filter((entry) => entry.id !== messageId));
+  };
+
+  const handleExportChat = () => {
+    if (!messages.length || !activeRecipientId) {
+      return;
+    }
+    const content = messages
+      .map((entry) => {
+        const author = entry.sender_id === currentUserId ? "Me" : "Them";
+        return `[${formatDateTime(entry.timestamp)}] ${author}: ${entry.message}`;
+      })
+      .join("\n");
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `chat-${activeRecipientId.slice(0, 8)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleBroadcast = async () => {
@@ -794,6 +826,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
           <div className="flex items-center gap-3 text-sm">
             <span className="rounded-full border border-cyan-400/40 px-3 py-1 capitalize">{profile.role}</span>
             <span className="hidden text-slate-500 md:inline">Unread: {totalUnread}</span>
+            <span className="hidden text-slate-500 md:inline">Online: {Object.keys(onlineUsers).length}</span>
             <button
               type="button"
               onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
@@ -926,15 +959,33 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </p>
               </div>
 
-              {isAdmin && (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleBroadcast}
-                  className="rounded-lg border border-cyan-300 px-3 py-1.5 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
+                  onClick={handleExportChat}
+                  disabled={!messages.length}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-slate-700"
                 >
-                  Broadcast Draft
+                  Export Chat
                 </button>
-              )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={handleBroadcast}
+                    className="rounded-lg border border-cyan-300 px-3 py-1.5 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
+                  >
+                    Broadcast Draft
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-3">
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search this conversation"
+                className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700"
+              />
             </div>
           </div>
 
@@ -946,8 +997,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </div>
             ) : (
               <AnimatePresence initial={false}>
-                {messages.map((entry) => {
+                {filteredMessages.map((entry) => {
                 const mine = entry.sender_id === currentUserId;
+                const canDelete = mine || isAdmin;
                 return (
                   <motion.div
                     key={entry.id}
@@ -961,8 +1013,8 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                       <div className="mt-1 flex items-center justify-between gap-3 text-[11px] opacity-80">
                         <span>{formatTime(entry.timestamp)}</span>
                         {mine && <span>{entry.seen_status ? "Seen" : "Delivered"}</span>}
-                        {isAdmin && (
-                          <button type="button" onClick={() => handleDeleteMessage(entry.id)} className="text-[10px] underline underline-offset-2">
+                        {canDelete && (
+                          <button type="button" onClick={() => handleDeleteMessage(entry.id, canDelete)} className="text-[10px] underline underline-offset-2">
                             Delete
                           </button>
                         )}
@@ -972,6 +1024,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 );
                 })}
               </AnimatePresence>
+            )}
+            {!isMessagesLoading && filteredMessages.length === 0 && (
+              <p className="text-center text-xs text-slate-500">No messages found for your search.</p>
             )}
             <div ref={messageEndRef} />
           </div>
@@ -988,6 +1043,16 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               )}
             </div>
             <div className="mb-2 flex flex-wrap gap-2">
+              {quickIcebreakers.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => handleDraftChange(prompt)}
+                  className="rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 dark:border-cyan-600/40 dark:text-cyan-300"
+                >
+                  {prompt}
+                </button>
+              ))}
               {emojiReactions.map((emoji) => (
                 <button
                   key={emoji}
