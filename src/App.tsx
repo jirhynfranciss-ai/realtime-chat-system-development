@@ -92,6 +92,11 @@ function JumpingDots() {
   );
 }
 
+function isSingleRowCoerceError(message: string) {
+  const text = message.toLowerCase();
+  return text.includes("cannot coerce the result to a single json object") || text.includes("json object requested");
+}
+
 export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") {
@@ -718,9 +723,11 @@ export default function App() {
     sendTypingSignal(false);
     setIsSending(true);
 
-    const { data, error } = await supabase.from("messages").insert(payload).select("*").single<Message>();
+    const { data, error } = await supabase.from("messages").insert(payload).select("*").maybeSingle<Message>();
     if (error) {
-      setAuthError(error.message);
+      if (!isSingleRowCoerceError(error.message)) {
+        setAuthError(error.message);
+      }
       setIsSending(false);
       return;
     }
@@ -738,7 +745,7 @@ export default function App() {
       return;
     }
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("profiles")
       .update({
         full_name: fullName,
@@ -749,16 +756,25 @@ export default function App() {
         favorite_color: favoriteColor,
         bio,
       })
-      .eq("user_id", profile.user_id)
-      .select("*")
-      .single<Profile>();
+      .eq("user_id", profile.user_id);
 
     if (error) {
       setProfileStatus(error.message);
       return;
     }
 
-    setProfile(data);
+    const updatedProfile: Profile = {
+      ...profile,
+      full_name: fullName,
+      nickname,
+      interests,
+      hobbies,
+      favorite_food: favoriteFood,
+      favorite_color: favoriteColor,
+      bio,
+    };
+    setProfile(updatedProfile);
+    setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
     setProfileStatus("Profile updated.");
   };
 
@@ -823,34 +839,42 @@ export default function App() {
       return;
     }
 
-    let { data, error } = await supabase
+    const editedAt = new Date().toISOString();
+    let { error } = await supabase
       .from("messages")
-      .update({ message: editingMessageText.trim(), edited_at: new Date().toISOString() })
-      .eq("id", messageId)
-      .select("*")
-      .single<Message>();
+      .update({ message: editingMessageText.trim(), edited_at: editedAt })
+      .eq("id", messageId);
 
     if (error && error.message.includes("edited_at")) {
       const fallback = await supabase
         .from("messages")
         .update({ message: editingMessageText.trim() })
-        .eq("id", messageId)
-        .select("*")
-        .single<Message>();
-      data = fallback.data;
+        .eq("id", messageId);
       error = fallback.error;
       if (!fallback.error) {
         setProfileStatus("Message edited. Run latest SQL to enable edited labels.");
       }
     }
 
+    if (error && isSingleRowCoerceError(error.message)) {
+      error = null;
+    }
+
     if (error) {
       setAuthError(error.message);
       return;
     }
-    if (data) {
-      setMessages((prev) => prev.map((entry) => (entry.id === data.id ? data : entry)));
-    }
+    setMessages((prev) =>
+      prev.map((entry) =>
+        entry.id === messageId
+          ? {
+              ...entry,
+              message: editingMessageText.trim(),
+              edited_at: entry.edited_at ?? editedAt,
+            }
+          : entry,
+      ),
+    );
     setEditingMessageId(null);
     setEditingMessageText("");
   };
@@ -1156,7 +1180,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <h1 className="text-lg font-semibold">{isAdmin ? "Admin Console" : "Private Chat"}</h1>
           </div>
 
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
             <span className="rounded-full border border-cyan-400/40 px-3 py-1 capitalize">{profile.role}</span>
             <span className="hidden text-slate-500 md:inline">Unread: {totalUnread}</span>
             <span className="hidden text-slate-500 md:inline">Online: {Object.keys(onlineUsers).length}</span>
@@ -1186,21 +1210,21 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <button
               type="button"
               onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 dark:border-slate-700"
+              className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700 md:px-3 md:py-1.5 md:text-sm"
             >
               {theme === "dark" ? "Light" : "Dark"}
             </button>
             <button
               type="button"
               onClick={() => setShowProfilePanel((prev) => !prev)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 dark:border-slate-700"
+              className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700 md:px-3 md:py-1.5 md:text-sm"
             >
               {showProfilePanel ? "Hide Profile" : "Show Profile"}
             </button>
             <button
               type="button"
               onClick={handleLogout}
-              className="rounded-lg bg-slate-900 px-3 py-1.5 text-white dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs text-white dark:bg-slate-100 dark:text-slate-900 md:px-3 md:py-1.5 md:text-sm"
             >
               Logout
             </button>
@@ -1460,7 +1484,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 Back
               </button>
 
-              <div className="flex items-center gap-2">
+              <div className="hidden items-center gap-2 md:flex">
                 <button
                   type="button"
                   onClick={() => setShowFavoritesOnly((prev) => !prev)}
@@ -1493,6 +1517,32 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   </button>
                 )}
               </div>
+            </div>
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1 md:hidden">
+              <button
+                type="button"
+                onClick={() => setShowFavoritesOnly((prev) => !prev)}
+                className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700"
+              >
+                {showFavoritesOnly ? "All" : "Favorites"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportChat}
+                disabled={!messages.length}
+                className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-xs disabled:opacity-50 dark:border-slate-700"
+              >
+                Export
+              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleBroadcast}
+                  className="shrink-0 rounded-lg border border-cyan-300 px-3 py-1.5 text-xs text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
+                >
+                  Broadcast
+                </button>
+              )}
             </div>
             <div className="mt-3">
               <input
@@ -1535,7 +1585,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     exit={{ opacity: 0, y: -6 }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm shadow-sm ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
+                    <div className={`max-w-[88%] rounded-2xl px-3 py-2 text-sm shadow-sm md:max-w-[75%] md:px-4 ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
                       {isEditing ? (
                         <div className="space-y-2">
                           <textarea
@@ -1616,13 +1666,13 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 ""
               )}
             </div>
-            <div className="mb-2 flex flex-wrap gap-2">
+            <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
               {quickIcebreakers.map((prompt) => (
                 <button
                   key={prompt}
                   type="button"
                   onClick={() => handleDraftChange(prompt)}
-                  className="rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 dark:border-cyan-600/40 dark:text-cyan-300"
+                  className="shrink-0 rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 dark:border-cyan-600/40 dark:text-cyan-300"
                 >
                   {prompt}
                 </button>
@@ -1632,7 +1682,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   key={entry}
                   type="button"
                   onClick={() => handleDraftChange(entry)}
-                  className="rounded-full border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700"
+                  className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700"
                 >
                   {entry}
                 </button>
@@ -1642,7 +1692,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   key={emoji}
                   type="button"
                   onClick={() => handleDraftChange(`${draft}${emoji}`)}
-                  className="rounded-md border border-slate-300 px-2 py-1 text-sm dark:border-slate-700"
+                  className="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm dark:border-slate-700"
                 >
                   {emoji}
                 </button>
@@ -1671,7 +1721,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 )}
               </div>
             )}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <textarea
                 value={draft}
                 onChange={(event) => handleDraftChange(event.target.value)}
@@ -1683,29 +1733,31 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 }}
                 placeholder={activeRecipientId ? "Type your message..." : "Select a conversation"}
                 disabled={!activeRecipientId}
-                className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700"
+                className="h-24 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700 sm:h-20"
               />
-              <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-xs dark:border-slate-700">
-                Media
-                <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
-              </label>
-              <button
-                type="button"
-                disabled={!activeRecipientId || isMediaUploading}
-                onClick={() => {
-                  void handleSendMessage();
-                }}
-                className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
-              >
-                {isSending || isMediaUploading ? (
-                  <span className="inline-flex items-center gap-2">
-                    {isMediaUploading ? "Uploading" : "Sending"}
-                    <JumpingDots />
-                  </span>
-                ) : (
-                  "Send"
-                )}
-              </button>
+              <div className="flex items-center justify-end gap-2">
+                <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-xs dark:border-slate-700">
+                  Media
+                  <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
+                </label>
+                <button
+                  type="button"
+                  disabled={!activeRecipientId || isMediaUploading}
+                  onClick={() => {
+                    void handleSendMessage();
+                  }}
+                  className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
+                >
+                  {isSending || isMediaUploading ? (
+                    <span className="inline-flex items-center gap-2">
+                      {isMediaUploading ? "Uploading" : "Sending"}
+                      <JumpingDots />
+                    </span>
+                  ) : (
+                    "Send"
+                  )}
+                </button>
+              </div>
             </div>
             <p className="mt-2 text-[11px] text-slate-500">{draft.length} chars. Press Enter to send, Shift+Enter for newline.</p>
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
