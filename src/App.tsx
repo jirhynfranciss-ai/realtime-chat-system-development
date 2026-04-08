@@ -260,17 +260,19 @@ export default function App() {
     }
 
     const ensureProfile = async () => {
-      const { data: existing, error: fetchError } = await supabase
+      // Avoid single-row coercion errors by reading as a list and taking the first row.
+      const { data, error: fetchError } = await supabase
         .from("profiles")
         .select("*")
         .eq("user_id", session.user.id)
-        .maybeSingle<Profile>();
+        .limit(1);
 
       if (fetchError) {
         setAuthError(fetchError.message);
         return;
       }
 
+      const existing = ((data ?? []) as Profile[])[0];
       if (existing) {
         setProfile(existing);
         setFullName(existing.full_name ?? "");
@@ -723,7 +725,7 @@ export default function App() {
     sendTypingSignal(false);
     setIsSending(true);
 
-    const { data, error } = await supabase.from("messages").insert(payload).select("*").maybeSingle<Message>();
+    const { data, error } = await supabase.from("messages").insert(payload).select("*");
     if (error) {
       if (!isSingleRowCoerceError(error.message)) {
         setAuthError(error.message);
@@ -732,8 +734,9 @@ export default function App() {
       return;
     }
 
-    if (data) {
-      setMessages((prev) => (prev.some((entry) => entry.id === data.id) ? prev : [...prev, data]));
+    const inserted = ((data ?? []) as Message[])[0];
+    if (inserted) {
+      setMessages((prev) => (prev.some((entry) => entry.id === inserted.id) ? prev : [...prev, inserted]));
     }
     clearMediaDraft();
     setReplyTo(null);
@@ -1172,7 +1175,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
   const typingNames = Object.values(typingStatus).join(", ");
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
+    <main className="min-h-dvh overflow-x-hidden bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
       <header className="border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6">
           <div>
@@ -1232,7 +1235,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-0 md:grid-cols-[280px_1fr]">
+      <div className="mx-auto grid max-w-7xl gap-0 md:grid-cols-[320px_minmax(0,1fr)]">
         <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block`}>
           {isAdmin ? (
             <div className="space-y-4 p-4">
@@ -1456,7 +1459,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
           )}
         </aside>
 
-        <section className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-[calc(100vh-65px)] flex-col md:flex`}>
+        <section className={`${mobilePane === "chat" ? "flex" : "hidden"} h-[calc(100dvh-65px)] min-w-0 flex-col md:flex`}>
           <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
             <div className="flex items-center justify-between">
               <div>
@@ -1564,7 +1567,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             </div>
           </div>
 
-          <div className="relative flex-1 space-y-3 overflow-y-auto bg-[linear-gradient(180deg,rgba(248,250,252,0.7)_0%,rgba(241,245,249,0.7)_100%)] px-4 py-4 dark:bg-[linear-gradient(180deg,rgba(2,6,23,0.5)_0%,rgba(15,23,42,0.55)_100%)] md:px-6">
+          <div className="relative flex-1 space-y-3 overflow-y-auto bg-[linear-gradient(180deg,rgba(248,250,252,0.7)_0%,rgba(241,245,249,0.7)_100%)] px-3 py-3 dark:bg-[linear-gradient(180deg,rgba(2,6,23,0.5)_0%,rgba(15,23,42,0.55)_100%)] md:px-6 md:py-4">
             {isMessagesLoading ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">
                 <span className="mr-2">Loading conversation</span>
@@ -1585,7 +1588,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     exit={{ opacity: 0, y: -6 }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
-                    <div className={`max-w-[88%] rounded-2xl px-3 py-2 text-sm shadow-sm md:max-w-[75%] md:px-4 ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
+                    <div className={`max-w-[92%] rounded-2xl px-3 py-2 text-sm shadow-sm md:max-w-[75%] md:px-4 ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
                       {isEditing ? (
                         <div className="space-y-2">
                           <textarea
@@ -1612,16 +1615,18 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                           {entry.media_url && entry.media_type === "video" && (
                             <video src={entry.media_url} controls className="max-h-72 w-full rounded-xl object-cover" />
                           )}
-                          <p className="whitespace-pre-wrap">{entry.message}</p>
+                          <p className="whitespace-pre-wrap break-words">{entry.message}</p>
                         </div>
                       )}
-                      <div className="mt-1 flex items-center justify-between gap-3 text-[11px] opacity-80">
-                        <span>
-                          {formatTime(entry.timestamp)}
-                          {entry.edited_at ? " (edited)" : ""}
-                        </span>
-                        {mine && <span>{entry.seen_status ? "Seen" : "Delivered"}</span>}
-                        <div className="flex items-center gap-2">
+                      <div className="mt-1 space-y-1 text-[11px] opacity-80">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>
+                            {formatTime(entry.timestamp)}
+                            {entry.edited_at ? " (edited)" : ""}
+                          </span>
+                          {mine && <span>{entry.seen_status ? "Seen" : "Delivered"}</span>}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <button type="button" onClick={() => toggleFavoriteMessage(entry.id)} className="text-[10px] underline underline-offset-2">
                             {isFavorite ? "Unstar" : "Star"}
                           </button>
@@ -1655,7 +1660,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <div ref={messageEndRef} />
           </div>
 
-          <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
+          <div className="border-t border-slate-200 bg-slate-100/95 px-3 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 md:px-6">
             <div className="mb-2 min-h-5 text-xs text-slate-500">
               {typingNames ? (
                 <span className="inline-flex items-center gap-2">
@@ -1721,7 +1726,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 )}
               </div>
             )}
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <textarea
                 value={draft}
                 onChange={(event) => handleDraftChange(event.target.value)}
@@ -1733,10 +1738,10 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 }}
                 placeholder={activeRecipientId ? "Type your message..." : "Select a conversation"}
                 disabled={!activeRecipientId}
-                className="h-24 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700 sm:h-20"
+                className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700 sm:h-20"
               />
-              <div className="flex items-center justify-end gap-2">
-                <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-xs dark:border-slate-700">
+              <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center sm:justify-end">
+                <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-center text-xs dark:border-slate-700">
                   Media
                   <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
                 </label>
