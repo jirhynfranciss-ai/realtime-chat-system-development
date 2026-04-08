@@ -60,6 +60,20 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
+function JumpingDots() {
+  return (
+    <div className="inline-flex items-center gap-1" aria-label="typing">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-300"
+          style={{ animation: "dot-jump 0.9s infinite", animationDelay: `${index * 0.15}s` }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") {
@@ -83,6 +97,8 @@ export default function App() {
   const [activityLogs, setActivityLogs] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isMessagesLoading, setIsMessagesLoading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [loginRole, setLoginRole] = useState<Role>("user");
   const [authError, setAuthError] = useState("");
@@ -112,10 +128,13 @@ export default function App() {
   }, [unreadByUser]);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    document.documentElement.style.colorScheme = theme;
+    // Keep auth screen consistently dark while preserving user theme preference after login.
+    const authScreen = !session || !profile;
+    const effectiveTheme = authScreen ? "dark" : theme;
+    document.documentElement.classList.toggle("dark", effectiveTheme === "dark");
+    document.documentElement.style.colorScheme = effectiveTheme;
     window.localStorage.setItem("crushconnect-theme", theme);
-  }, [theme]);
+  }, [theme, session, profile]);
 
   useEffect(() => {
     if (!supabase) {
@@ -315,6 +334,7 @@ export default function App() {
     }
 
     const loadMessages = async () => {
+      setIsMessagesLoading(true);
       const { data, error } = await supabase
         .from("messages")
         .select("*")
@@ -325,6 +345,7 @@ export default function App() {
 
       if (error) {
         setAuthError(error.message);
+        setIsMessagesLoading(false);
         return;
       }
 
@@ -337,6 +358,7 @@ export default function App() {
         .eq("receiver_id", session.user.id)
         .eq("sender_id", activeRecipientId)
         .eq("seen_status", false);
+      setIsMessagesLoading(false);
     };
 
     void loadMessages();
@@ -481,16 +503,19 @@ export default function App() {
 
     setDraft("");
     sendTypingSignal(false);
+    setIsSending(true);
 
     const { data, error } = await supabase.from("messages").insert(payload).select("*").single<Message>();
     if (error) {
       setAuthError(error.message);
+      setIsSending(false);
       return;
     }
 
     if (data) {
       setMessages((prev) => (prev.some((entry) => entry.id === data.id) ? prev : [...prev, data]));
     }
+    setIsSending(false);
   };
 
   const handleProfileSave = async () => {
@@ -634,66 +659,57 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
   if (!session || !profile) {
     return (
-      <main className="relative min-h-screen overflow-hidden bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(14,165,233,0.18),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(99,102,241,0.18),transparent_35%)] dark:bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.28),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(56,189,248,0.2),transparent_35%)]" />
-        <div className="relative mx-auto flex max-w-5xl justify-end px-6 pt-6">
-          <button
-            type="button"
-            onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-            className="rounded-lg border border-slate-300 bg-white/75 px-3 py-1.5 text-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/70"
-          >
-            {theme === "dark" ? "Light" : "Dark"}
-          </button>
-        </div>
+      <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100 transition-colors">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(34,211,238,0.2),transparent_40%),radial-gradient(circle_at_85%_10%,rgba(59,130,246,0.2),transparent_34%)]" />
         <motion.section
           initial={{ opacity: 0, y: 32 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="relative mx-auto flex min-h-[calc(100vh-64px)] max-w-5xl items-center px-6 py-16"
+          className="relative mx-auto flex min-h-screen max-w-5xl items-center px-6 py-16"
         >
           <div className="grid w-full gap-12 md:grid-cols-[1.2fr_1fr] md:items-center">
             <div className="space-y-5">
               <p className="text-sm uppercase tracking-[0.18em] text-cyan-300">CrushConnect</p>
               <h1 className="text-4xl font-semibold leading-tight md:text-5xl">Private messaging designed for meaningful connection.</h1>
-              <p className="max-w-xl text-slate-600 dark:text-slate-300">
+              <p className="max-w-xl text-slate-300">
                 A secure, role-based chat system built with Supabase Auth, Realtime, and row-level access control for clean one-to-one conversations.
               </p>
             </div>
 
             <form
               onSubmit={handleAuthSubmit}
-              className="space-y-4 rounded-2xl border border-slate-300/80 bg-white/85 p-6 backdrop-blur dark:border-white/15 dark:bg-white/5"
+              className="space-y-4 rounded-2xl border border-white/15 bg-white/5 p-6 backdrop-blur"
             >
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthMode("login")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-100"}`}
+                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
                 >
                   Login
                 </button>
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-100"}`}
+                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
                 >
                   Sign Up
                 </button>
               </div>
 
               {authMode === "login" && (
-                <div className="flex gap-2 rounded-lg bg-slate-100 p-1 text-sm dark:bg-white/5">
+                <div className="flex gap-2 rounded-lg bg-white/5 p-1 text-sm">
                   <button
                     type="button"
                     onClick={() => setLoginRole("user")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "user" ? "bg-white text-slate-900" : "text-slate-500 dark:text-slate-300"}`}
+                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "user" ? "bg-white text-slate-900" : "text-slate-300"}`}
                   >
                     User
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginRole("admin")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "admin" ? "bg-white text-slate-900" : "text-slate-500 dark:text-slate-300"}`}
+                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "admin" ? "bg-white text-slate-900" : "text-slate-300"}`}
                   >
                     Admin
                   </button>
@@ -704,7 +720,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 required
                 value={authEmail}
                 onChange={(event) => setAuthEmail(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                 type="email"
                 placeholder="Email"
               />
@@ -712,7 +728,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 required
                 value={authPassword}
                 onChange={(event) => setAuthPassword(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                 type="password"
                 placeholder="Password"
               />
@@ -722,25 +738,25 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   <input
                     value={fullName}
                     onChange={(event) => setFullName(event.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                     placeholder="Full name"
                   />
                   <input
                     value={nickname}
                     onChange={(event) => setNickname(event.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                     placeholder="Nickname"
                   />
                   <input
                     value={interests}
                     onChange={(event) => setInterests(event.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                     placeholder="Interests"
                   />
                   <input
                     value={hobbies}
                     onChange={(event) => setHobbies(event.target.value)}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
+                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
                     placeholder="Hobbies"
                   />
                 </>
@@ -857,6 +873,20 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <p className="font-semibold text-slate-700 dark:text-slate-300">Activity Log</p>
                 {activityLogs.length === 0 ? <p>No recent activity.</p> : activityLogs.map((entry) => <p key={entry}>{entry}</p>)}
               </div>
+
+              <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+                <h3 className="text-sm font-semibold">My Profile</h3>
+                <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <input value={hobbies} onChange={(e) => setHobbies(e.target.value)} placeholder="Hobbies" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <input value={favoriteColor} onChange={(e) => setFavoriteColor(e.target.value)} placeholder="Favorite color" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <input value={favoriteFood} onChange={(e) => setFavoriteFood(e.target.value)} placeholder="Favorite food" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short bio" className="h-16 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
+                  Save Profile
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-3 p-4">
@@ -908,9 +938,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             </div>
           </div>
 
-          <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4 md:px-6">
-            <AnimatePresence initial={false}>
-              {messages.map((entry) => {
+          <div className="relative flex-1 space-y-3 overflow-y-auto bg-[linear-gradient(180deg,rgba(248,250,252,0.7)_0%,rgba(241,245,249,0.7)_100%)] px-4 py-4 dark:bg-[linear-gradient(180deg,rgba(2,6,23,0.5)_0%,rgba(15,23,42,0.55)_100%)] md:px-6">
+            {isMessagesLoading ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                <span className="mr-2">Loading conversation</span>
+                <JumpingDots />
+              </div>
+            ) : (
+              <AnimatePresence initial={false}>
+                {messages.map((entry) => {
                 const mine = entry.sender_id === currentUserId;
                 return (
                   <motion.div
@@ -920,7 +956,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     exit={{ opacity: 0, y: -6 }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${mine ? "bg-cyan-500 text-slate-950" : "bg-slate-200 dark:bg-slate-800"}`}>
+                    <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm shadow-sm ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
                       <p className="whitespace-pre-wrap">{entry.message}</p>
                       <div className="mt-1 flex items-center justify-between gap-3 text-[11px] opacity-80">
                         <span>{formatTime(entry.timestamp)}</span>
@@ -934,13 +970,23 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     </div>
                   </motion.div>
                 );
-              })}
-            </AnimatePresence>
+                })}
+              </AnimatePresence>
+            )}
             <div ref={messageEndRef} />
           </div>
 
           <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
-            <div className="mb-2 min-h-5 text-xs text-slate-500">{typingNames ? `${typingNames} is typing...` : ""}</div>
+            <div className="mb-2 min-h-5 text-xs text-slate-500">
+              {typingNames ? (
+                <span className="inline-flex items-center gap-2">
+                  <span>{typingNames} is typing</span>
+                  <JumpingDots />
+                </span>
+              ) : (
+                ""
+              )}
+            </div>
             <div className="mb-2 flex flex-wrap gap-2">
               {emojiReactions.map((emoji) => (
                 <button
@@ -975,7 +1021,14 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 }}
                 className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
               >
-                Send
+                {isSending ? (
+                  <span className="inline-flex items-center gap-2">
+                    Sending
+                    <JumpingDots />
+                  </span>
+                ) : (
+                  "Send"
+                )}
               </button>
             </div>
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
