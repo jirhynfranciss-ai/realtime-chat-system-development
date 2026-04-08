@@ -77,6 +77,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [loginRole, setLoginRole] = useState<Role>("user");
   const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -373,6 +374,7 @@ export default function App() {
       return;
     }
     setAuthError("");
+    setAuthInfo("");
     setIsSubmitting(true);
 
     if (authMode === "signup") {
@@ -392,26 +394,7 @@ export default function App() {
       if (error) {
         setAuthError(error.message);
       } else if (data.user) {
-        const { error: profileError } = await supabase.from("profiles").upsert(
-          {
-            user_id: data.user.id,
-            email: authEmail,
-            role: "user",
-            full_name: fullName,
-            nickname,
-            interests,
-            hobbies,
-            favorite_food: favoriteFood,
-            favorite_color: favoriteColor,
-            bio,
-            blocked: false,
-          },
-          { onConflict: "user_id" },
-        );
-
-        if (profileError) {
-          setAuthError(profileError.message);
-        }
+        setAuthInfo("Account created. If email confirmation is enabled, verify your email, then log in.");
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({
@@ -724,6 +707,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               )}
 
               {authError && <p className="text-sm text-rose-300">{authError}</p>}
+              {authInfo && <p className="text-sm text-cyan-200">{authInfo}</p>}
 
               <button
                 type="submit"
