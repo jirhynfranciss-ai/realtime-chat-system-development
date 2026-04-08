@@ -609,6 +609,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             Create tables: <span className="font-medium">profiles</span> and <span className="font-medium">messages</span>, then enable RLS
             policies so users can only read their own conversations.
           </p>
+          <p className="text-sm text-slate-400">
+            Full setup guide: <span className="font-medium">SUPABASE_SETUP.md</span> and SQL: <span className="font-medium">supabase/schema.sql</span>
+          </p>
         </div>
       </main>
     );
