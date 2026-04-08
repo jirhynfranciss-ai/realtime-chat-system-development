@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Use class-based dark mode so in-app theme toggle applies instantly. */
+@custom-variant dark (&:is(.dark *));
+
 @keyframes dot-jump {
   0%,
   80%,
