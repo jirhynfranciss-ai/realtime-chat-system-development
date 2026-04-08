@@ -154,3 +154,33 @@ select:focus {
     opacity: 1;
   }
 }
+
+@keyframes float-soft {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@layer utilities {
+  .float-soft {
+    animation: float-soft 6s ease-in-out infinite;
+  }
+
+  .pulse-glow {
+    animation: pulse-glow 3.2s ease-in-out infinite;
+  }
+}
