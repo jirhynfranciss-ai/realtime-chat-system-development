@@ -1,101 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createClient, type RealtimeChannel, type Session } from "@supabase/supabase-js";
-
-type Role = "admin" | "user";
-
-type Profile = {
-  id: string;
-  user_id: string;
-  email: string | null;
-  role: Role;
-  full_name: string | null;
-  nickname: string | null;
-  interests: string | null;
-  hobbies: string | null;
-  bio: string | null;
-  favorite_color: string | null;
-  favorite_food: string | null;
-  blocked?: boolean;
-  created_at?: string;
-};
-
-type Message = {
-  id: string;
-  sender_id: string;
-  receiver_id: string;
-  message: string;
-  timestamp: string;
-  seen_status: boolean;
-  edited_at?: string | null;
-  media_url?: string | null;
-  media_type?: "image" | "video" | null;
-};
-
-type OnlinePresence = {
-  user_id: string;
-  name: string;
-  role: Role;
-};
-
-type ReminderItem = {
-  id: string;
-  text: string;
-  dueAt: string;
-  done: boolean;
-};
+import { JumpingDots } from "./components/JumpingDots";
+import { emojiReactions, quickIcebreakers, quickReplies } from "./lib/chat-constants";
+import { formatDateTime, formatTime } from "./lib/date-format";
+import type {
+  ManagedProfileDraft,
+  Message,
+  OnlinePresence,
+  Profile,
+  ReminderItem,
+  UserSort,
+} from "./types/chat";
+import { isSingleRowCoerceError } from "./utils/supabase-errors";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const configured = Boolean(supabaseUrl && supabaseAnonKey);
 const supabase = configured ? createClient(supabaseUrl!, supabaseAnonKey!) : null;
 
-const emojiReactions = ["❤️", "😊", "🔥", "👍", "😂"];
-const quickIcebreakers = [
-  "How was your day so far?",
-  "What made you smile today?",
-  "What is your current favorite song?",
-  "If we plan a chill day, what should we do first?",
-];
-
-const quickReplies = ["Noted", "Tell me more", "I like that", "Give me 5 mins", "Sounds good"];
-
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function JumpingDots() {
-  return (
-    <div className="inline-flex items-center gap-1" aria-label="typing">
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-300"
-          style={{ animation: "dot-jump 0.9s infinite", animationDelay: `${index * 0.15}s` }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function isSingleRowCoerceError(message: string) {
-  const text = message.toLowerCase();
-  return text.includes("cannot coerce the result to a single json object") || text.includes("json object requested");
-}
 
 export default function App() {
+  const prefersReducedMotion = useReducedMotion();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") {
       return "light";
@@ -137,6 +63,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [userFilter, setUserFilter] = useState<"all" | "online" | "unread">("all");
+  const [userSort, setUserSort] = useState<UserSort>("active");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
@@ -152,6 +79,18 @@ export default function App() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string>("");
   const [mobilePane, setMobilePane] = useState<"panel" | "chat">("chat");
+  const [autoWelcomeEnabled, setAutoWelcomeEnabled] = useState(true);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [isSavingManagedUser, setIsSavingManagedUser] = useState(false);
+  const [managedProfileDraft, setManagedProfileDraft] = useState<ManagedProfileDraft>({
+    full_name: "",
+    nickname: "",
+    interests: "",
+    hobbies: "",
+    favorite_color: "",
+    favorite_food: "",
+    bio: "",
+  });
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -161,6 +100,7 @@ export default function App() {
   const currentUserId = session?.user.id ?? "";
   const activeAdminProfile = profiles.find((entry) => entry.role === "admin");
   const activeRecipientId = isAdmin ? selectedUserId : activeAdminProfile?.user_id ?? "";
+  const isUserBlocked = !isAdmin && Boolean(profile?.blocked);
 
   const totalUnread = useMemo(() => {
     return Object.values(unreadByUser).reduce((sum, count) => sum + count, 0);
@@ -168,7 +108,7 @@ export default function App() {
 
   const visibleUsers = useMemo(() => {
     const base = profiles.filter((entry) => entry.role === "user");
-    return base
+    const filtered = base
       .filter((entry) => {
         if (userFilter === "online") {
           return Boolean(onlineUsers[entry.user_id]);
@@ -182,7 +122,23 @@ export default function App() {
         const target = `${entry.nickname ?? ""} ${entry.full_name ?? ""} ${entry.email ?? ""}`.toLowerCase();
         return target.includes(userSearch.trim().toLowerCase());
       });
-  }, [profiles, userFilter, unreadByUser, userSearch, onlineUsers]);
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (userSort === "newest") {
+        return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime();
+      }
+      if (userSort === "name") {
+        const aName = `${a.nickname ?? ""}${a.full_name ?? ""}`.trim().toLowerCase();
+        const bName = `${b.nickname ?? ""}${b.full_name ?? ""}`.trim().toLowerCase();
+        return aName.localeCompare(bName);
+      }
+      const aScore = (unreadByUser[a.user_id] ?? 0) + (onlineUsers[a.user_id] ? 2 : 0);
+      const bScore = (unreadByUser[b.user_id] ?? 0) + (onlineUsers[b.user_id] ? 2 : 0);
+      return bScore - aScore;
+    });
+
+    return sorted;
+  }, [profiles, userFilter, unreadByUser, userSearch, onlineUsers, userSort]);
 
   const messageStats = useMemo(() => {
     const words = messages.reduce((sum, entry) => sum + entry.message.trim().split(/\s+/).filter(Boolean).length, 0);
@@ -272,6 +228,7 @@ export default function App() {
       const existing = ((data ?? []) as Profile[])[0];
       if (existing) {
         setProfile(existing);
+        setActivityLogs((prev) => [`Login success at ${formatDateTime(new Date().toISOString())}`, ...prev].slice(0, 8));
         setFullName(existing.full_name ?? "");
         setNickname(existing.nickname ?? "");
         setInterests(existing.interests ?? "");
@@ -355,6 +312,27 @@ export default function App() {
       return;
     }
 
+    const profileChannel = supabase
+      .channel(`realtime:profiles:${session.user.id}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, (payload) => {
+        const updatedProfile = payload.new as Profile;
+        setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
+        if (updatedProfile.user_id === session.user.id) {
+          setProfile((prev) => (prev ? { ...prev, ...updatedProfile } : updatedProfile));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(profileChannel);
+    };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!supabase || !session?.user.id) {
+      return;
+    }
+
     const channel = supabase
       .channel(`realtime:messages:${session.user.id}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => {
@@ -394,6 +372,10 @@ export default function App() {
         const updated = payload.new as Message;
         setMessages((prev) => prev.map((msg) => (msg.id === updated.id ? updated : msg)));
       })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, (payload) => {
+        const deleted = payload.old as Message;
+        setMessages((prev) => prev.filter((msg) => msg.id !== deleted.id));
+      })
       .subscribe();
 
     return () => {
@@ -407,6 +389,8 @@ export default function App() {
       return;
     }
 
+    let cancelled = false;
+
     const loadMessages = async () => {
       setIsMessagesLoading(true);
       const { data, error } = await supabase
@@ -419,12 +403,16 @@ export default function App() {
 
       if (error) {
         setAuthError(error.message);
-        setIsMessagesLoading(false);
+        if (!cancelled) {
+          setIsMessagesLoading(false);
+        }
         return;
       }
 
-      setMessages((data ?? []) as Message[]);
-      setUnreadByUser((prev) => ({ ...prev, [activeRecipientId]: 0 }));
+      if (!cancelled) {
+        setMessages((data ?? []) as Message[]);
+        setUnreadByUser((prev) => ({ ...prev, [activeRecipientId]: 0 }));
+      }
 
       await supabase
         .from("messages")
@@ -432,11 +420,47 @@ export default function App() {
         .eq("receiver_id", session.user.id)
         .eq("sender_id", activeRecipientId)
         .eq("seen_status", false);
-      setIsMessagesLoading(false);
+
+      if (!cancelled) {
+        setIsMessagesLoading(false);
+      }
     };
 
     void loadMessages();
+    return () => {
+      cancelled = true;
+    };
   }, [session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!supabase || !isAdmin || !session?.user.id || !selectedUserId || !autoWelcomeEnabled || isMessagesLoading) {
+      return;
+    }
+    if (messages.length > 0) {
+      return;
+    }
+
+    const key = `crushconnect-welcomed:${session.user.id}`;
+    const welcomed = JSON.parse(window.localStorage.getItem(key) ?? "[]") as string[];
+    if (welcomed.includes(selectedUserId)) {
+      return;
+    }
+
+    const sendAutoWelcome = async () => {
+      const { error } = await supabase.from("messages").insert({
+        sender_id: session.user.id,
+        receiver_id: selectedUserId,
+        message: "Hi and welcome. I am glad you are here. Feel free to share your day.",
+        timestamp: new Date().toISOString(),
+        seen_status: false,
+      });
+      if (!error) {
+        window.localStorage.setItem(key, JSON.stringify([...welcomed, selectedUserId]));
+      }
+    };
+
+    void sendAutoWelcome();
+  }, [supabase, isAdmin, session?.user.id, selectedUserId, autoWelcomeEnabled, isMessagesLoading, messages.length]);
 
   useEffect(() => {
     if (!supabase || !session?.user.id || !activeRecipientId) {
@@ -477,6 +501,18 @@ export default function App() {
       messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, autoScroll]);
+
+  useEffect(() => {
+    setTypingStatus({});
+  }, [activeRecipientId]);
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -679,7 +715,7 @@ export default function App() {
   };
 
   const handleSendMessage = async () => {
-    if (!supabase || !session?.user.id || !activeRecipientId || (!draft.trim() && !mediaFile)) {
+    if (!supabase || !session?.user.id || !activeRecipientId || isUserBlocked || (!draft.trim() && !mediaFile)) {
       return;
     }
 
@@ -774,6 +810,61 @@ export default function App() {
     setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
     setProfileStatus("Profile updated.");
     setAuthError("");
+  };
+
+  const handleProfileAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!supabase || !profile) {
+      return;
+    }
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setAuthError("Profile picture must be an image.");
+      return;
+    }
+
+    setIsAvatarUploading(true);
+    const extension = file.name.split(".").pop() ?? "png";
+    const path = `${profile.user_id}/avatar-${Date.now()}.${extension}`;
+    const { error: uploadError } = await supabase.storage.from("chat-media").upload(path, file, { upsert: true });
+    if (uploadError) {
+      setAuthError(uploadError.message);
+      setIsAvatarUploading(false);
+      return;
+    }
+
+    const { data: publicData } = supabase.storage.from("chat-media").getPublicUrl(path);
+    const avatarUrl = publicData.publicUrl;
+    const { error: updateError } = await supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("user_id", profile.user_id);
+    if (updateError) {
+      setAuthError(updateError.message);
+      setIsAvatarUploading(false);
+      return;
+    }
+
+    setProfile((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev));
+    setProfiles((prev) => prev.map((entry) => (entry.user_id === profile.user_id ? { ...entry, avatar_url: avatarUrl } : entry)));
+    setProfileStatus("Profile picture updated.");
+    setIsAvatarUploading(false);
+    event.target.value = "";
+  };
+
+  const handleAdminSaveManagedUser = async () => {
+    if (!supabase || !selectedUser) {
+      return;
+    }
+    setIsSavingManagedUser(true);
+    const { error } = await supabase.from("profiles").update(managedProfileDraft).eq("user_id", selectedUser.user_id);
+    if (error) {
+      setAuthError(error.message);
+      setIsSavingManagedUser(false);
+      return;
+    }
+    setProfiles((prev) => prev.map((entry) => (entry.user_id === selectedUser.user_id ? { ...entry, ...managedProfileDraft } : entry)));
+    setProfileStatus("User profile updated by admin.");
+    setIsSavingManagedUser(false);
   };
 
   const handleToggleBlocked = async (userId: string, blocked: boolean) => {
@@ -1167,16 +1258,57 @@ VITE_ADMIN_EMAIL=your_admin_email`}
   }
 
   const selectedUser = profiles.find((entry) => entry.user_id === selectedUserId);
+  const adminStats = useMemo(() => {
+    const users = profiles.filter((entry) => entry.role === "user");
+    const online = users.filter((entry) => Boolean(onlineUsers[entry.user_id])).length;
+    const blocked = users.filter((entry) => Boolean(entry.blocked)).length;
+    const unread = Object.values(unreadByUser).reduce((sum, value) => sum + value, 0);
+    return { totalUsers: users.length, online, blocked, unread };
+  }, [profiles, onlineUsers, unreadByUser]);
+
+  useEffect(() => {
+    if (!selectedUser) {
+      setManagedProfileDraft({
+        full_name: "",
+        nickname: "",
+        interests: "",
+        hobbies: "",
+        favorite_color: "",
+        favorite_food: "",
+        bio: "",
+      });
+      return;
+    }
+    setManagedProfileDraft({
+      full_name: selectedUser.full_name ?? "",
+      nickname: selectedUser.nickname ?? "",
+      interests: selectedUser.interests ?? "",
+      hobbies: selectedUser.hobbies ?? "",
+      favorite_color: selectedUser.favorite_color ?? "",
+      favorite_food: selectedUser.favorite_food ?? "",
+      bio: selectedUser.bio ?? "",
+    });
+  }, [selectedUser?.user_id]);
+
   const typingNames = Object.values(typingStatus).join(", ");
+  const enterTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.45, ease: "easeOut" as const };
+  const panelMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, x: 0 }, animate: { opacity: 1, x: 0 } }
+    : { initial: { opacity: 0, x: -18 }, animate: { opacity: 1, x: 0 } };
+  const chatMotion = prefersReducedMotion
+    ? { initial: { opacity: 1, y: 0 }, animate: { opacity: 1, y: 0 } }
+    : { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 } };
 
   return (
-    <main className="min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
+    <main className="relative min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
+      <div className="pointer-events-none absolute -left-20 top-16 h-56 w-56 rounded-full bg-cyan-400/20 blur-3xl dark:bg-cyan-400/15" />
+      <div className="pointer-events-none absolute -right-24 top-24 h-64 w-64 rounded-full bg-indigo-400/20 blur-3xl dark:bg-indigo-400/20" />
       <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/75">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6">
-          <div>
+          <motion.div initial={prefersReducedMotion ? false : { opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={enterTransition}>
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-500">CrushConnect</p>
             <h1 className="text-lg font-semibold">{isAdmin ? "Admin Console" : "Private Chat"}</h1>
-          </div>
+          </motion.div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
             <span className="rounded-full border border-cyan-400/40 px-3 py-1 capitalize">{profile.role}</span>
@@ -1234,11 +1366,35 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
       <div className={`mx-auto grid max-w-7xl gap-0 ${isAdmin ? "md:grid-cols-[340px_minmax(0,1fr)]" : "md:grid-cols-1"}`}>
         {isAdmin && (
-          <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/75 md:block`}>
+          <motion.aside
+            initial={panelMotion.initial}
+            animate={panelMotion.animate}
+            transition={enterTransition}
+            className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/75 md:block`}
+          >
             <div className="space-y-4 p-4">
               <div>
                 <h2 className="text-sm font-semibold">Users</h2>
                 <p className="text-xs text-slate-500">Manage access and open private chats.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Total Users</p>
+                  <p className="text-base font-semibold">{adminStats.totalUsers}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Online</p>
+                  <p className="text-base font-semibold">{adminStats.online}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Blocked</p>
+                  <p className="text-base font-semibold">{adminStats.blocked}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-slate-500">Unread</p>
+                  <p className="text-base font-semibold">{adminStats.unread}</p>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1259,6 +1415,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     Unread
                   </button>
                 </div>
+                <select
+                  value={userSort}
+                  onChange={(event) => setUserSort(event.target.value as UserSort)}
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                >
+                  <option value="active">Sort: Active</option>
+                  <option value="newest">Sort: Newest</option>
+                  <option value="name">Sort: Name</option>
+                </select>
               </div>
 
               <div className="space-y-2">
@@ -1268,6 +1433,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     return (
                         <motion.button
                         whileHover={{ x: 3 }}
+                        whileTap={{ scale: 0.99 }}
                         key={entry.user_id}
                         type="button"
                           onClick={() => {
@@ -1280,9 +1446,18 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                             : "border-slate-200 dark:border-slate-700"
                         }`}
                       >
-                        <div className="flex items-center justify-between text-sm font-medium">
-                          <span>{entry.nickname || entry.full_name || "Unnamed"}</span>
-                          <span className={`h-2.5 w-2.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-slate-400"}`} />
+                        <div className="flex items-center justify-between gap-2 text-sm font-medium">
+                          <span className="flex min-w-0 items-center gap-2">
+                            {entry.avatar_url ? (
+                              <img src={entry.avatar_url} alt="avatar" className="h-7 w-7 rounded-full object-cover" loading="lazy" />
+                            ) : (
+                              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-[10px] font-semibold text-cyan-700 dark:text-cyan-300">
+                                {(entry.nickname || entry.full_name || "U").slice(0, 1).toUpperCase()}
+                              </span>
+                            )}
+                            <span className="truncate">{entry.nickname || entry.full_name || "Unnamed"}</span>
+                          </span>
+                          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${isOnline ? "bg-emerald-400" : "bg-slate-400"}`} />
                         </div>
                         <div className="mt-1 text-xs text-slate-500">{entry.email}</div>
                         {(unreadByUser[entry.user_id] ?? 0) > 0 && <div className="mt-1 text-xs text-cyan-600">{unreadByUser[entry.user_id]} unread</div>}
@@ -1293,6 +1468,28 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
               {selectedUser && (
                 <div className="space-y-2 border-t border-slate-200 pt-4 text-sm dark:border-slate-800">
+                  <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Manage User Information</p>
+                  <input
+                    value={managedProfileDraft.full_name}
+                    onChange={(event) => setManagedProfileDraft((prev) => ({ ...prev, full_name: event.target.value }))}
+                    placeholder="Full name"
+                    className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                  />
+                  <input
+                    value={managedProfileDraft.nickname}
+                    onChange={(event) => setManagedProfileDraft((prev) => ({ ...prev, nickname: event.target.value }))}
+                    placeholder="Nickname"
+                    className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleAdminSaveManagedUser();
+                    }}
+                    className="w-full rounded-lg border border-indigo-300 px-3 py-2 text-indigo-700 dark:border-indigo-500/40 dark:text-indigo-300"
+                  >
+                    {isSavingManagedUser ? "Saving..." : "Save User Profile"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleToggleBlocked(selectedUser.user_id, Boolean(selectedUser.blocked))}
@@ -1315,6 +1512,13 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
                   >
                     Send Welcome Message
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAutoWelcomeEnabled((prev) => !prev)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-700 dark:border-slate-700 dark:text-slate-300"
+                  >
+                    Auto Welcome: {autoWelcomeEnabled ? "On" : "Off"}
                   </button>
                 </div>
               )}
@@ -1375,6 +1579,19 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               {showProfilePanel && (
                 <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
                 <h3 className="text-sm font-semibold">My Profile</h3>
+                <div className="flex items-center gap-3 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  {profile.avatar_url ? (
+                    <img src={profile.avatar_url} alt="My avatar" className="h-12 w-12 rounded-full object-cover" loading="lazy" />
+                  ) : (
+                    <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-cyan-500/20 text-sm font-semibold text-cyan-700 dark:text-cyan-300">
+                      {(nickname || fullName || "U").slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <label className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700">
+                    {isAvatarUploading ? "Uploading..." : "Upload Photo"}
+                    <input type="file" accept="image/*" onChange={handleProfileAvatarUpload} className="hidden" />
+                  </label>
+                </div>
                 <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
                 <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
                 <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
@@ -1388,10 +1605,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </div>
               )}
             </div>
-          </aside>
+          </motion.aside>
         )}
 
-        <section className={`${isAdmin ? (mobilePane === "chat" ? "flex" : "hidden") : "flex"} h-[calc(100dvh-70px)] min-w-0 flex-col md:h-[calc(100dvh-69px)] md:flex`}>
+        <motion.section
+          initial={chatMotion.initial}
+          animate={chatMotion.animate}
+          transition={enterTransition}
+          className={`${isAdmin ? (mobilePane === "chat" ? "flex" : "hidden") : "flex"} h-[calc(100dvh-70px)] min-w-0 flex-col md:h-[calc(100dvh-69px)] md:flex`}
+        >
           <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
             <div className="flex items-center justify-between">
               <div>
@@ -1403,7 +1625,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     : `Chat with ${profiles.find((entry) => entry.role === "admin")?.nickname || "Admin"}`}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  {activeRecipientId && onlineUsers[activeRecipientId]
+                  {isUserBlocked
+                    ? "Your account is currently blocked. Contact admin for access."
+                    : activeRecipientId && onlineUsers[activeRecipientId]
                     ? "Online now"
                     : activeRecipientId
                       ? "Offline now. You can still send messages."
@@ -1517,9 +1741,11 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 return (
                   <motion.div
                     key={entry.id}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -6 }}
+                    layout
+                    initial={prefersReducedMotion ? { opacity: 1 } : { opacity: 0, y: 12, scale: 0.99 }}
+                    animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+                    exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.98 }}
+                    transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.24, ease: "easeOut" }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
                     <div className={`max-w-[94%] rounded-2xl px-3 py-2 text-sm shadow-[0_8px_24px_-18px_rgba(15,23,42,0.9)] md:max-w-[76%] md:px-4 ${mine ? "bg-gradient-to-br from-cyan-400 to-cyan-500 text-slate-950" : "bg-white/95 dark:bg-slate-800/95"}`}>
@@ -1610,8 +1836,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={prompt}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(prompt)}
-                  className="shrink-0 rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 dark:border-cyan-600/40 dark:text-cyan-300"
+                  className="shrink-0 rounded-full border border-cyan-200 px-2.5 py-1 text-xs text-cyan-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-cyan-600/40 dark:text-cyan-300"
                 >
                   {prompt}
                 </button>
@@ -1620,8 +1847,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={entry}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(entry)}
-                  className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700"
+                  className="shrink-0 rounded-full border border-slate-300 px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700"
                 >
                   {entry}
                 </button>
@@ -1630,8 +1858,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button
                   key={emoji}
                   type="button"
+                  disabled={isUserBlocked}
                   onClick={() => handleDraftChange(`${draft}${emoji}`)}
-                  className="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm dark:border-slate-700"
+                  className="shrink-0 rounded-md border border-slate-300 px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700"
                 >
                   {emoji}
                 </button>
@@ -1671,17 +1900,17 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   }
                 }}
                 placeholder={activeRecipientId ? "Type your message..." : "Select a conversation"}
-                disabled={!activeRecipientId}
+                disabled={!activeRecipientId || isUserBlocked}
                 className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700 sm:h-20"
               />
               <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center sm:justify-end">
-                <label className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-center text-xs dark:border-slate-700">
+                <label className={`rounded-lg border border-slate-300 px-3 py-2 text-center text-xs dark:border-slate-700 ${isUserBlocked ? "cursor-not-allowed opacity-45" : "cursor-pointer"}`}>
                   Media
-                  <input type="file" accept="image/*,video/*" onChange={handlePickMedia} className="hidden" />
+                  <input type="file" accept="image/*,video/*" onChange={handlePickMedia} disabled={isUserBlocked} className="hidden" />
                 </label>
                 <button
                   type="button"
-                  disabled={!activeRecipientId || isMediaUploading}
+                  disabled={!activeRecipientId || isMediaUploading || isUserBlocked}
                   onClick={() => {
                     void handleSendMessage();
                   }}
@@ -1702,7 +1931,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             {profileStatus && <p className="mt-1 text-xs text-cyan-600 dark:text-cyan-300">{profileStatus}</p>}
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
           </div>
-        </section>
+        </motion.section>
       </div>
 
       {!isAdmin && showProfilePanel && (
@@ -1718,6 +1947,19 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </button>
             </div>
             <div className="space-y-2">
+              <div className="flex items-center gap-3 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                {profile.avatar_url ? (
+                  <img src={profile.avatar_url} alt="My avatar" className="h-14 w-14 rounded-full object-cover" loading="lazy" />
+                ) : (
+                  <span className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan-500/20 text-base font-semibold text-cyan-700 dark:text-cyan-300">
+                    {(nickname || fullName || "U").slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <label className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700">
+                  {isAvatarUploading ? "Uploading..." : "Upload Profile Picture"}
+                  <input type="file" accept="image/*" onChange={handleProfileAvatarUpload} className="hidden" />
+                </label>
+              </div>
               <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
               <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
               <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
