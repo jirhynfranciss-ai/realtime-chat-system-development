@@ -48,8 +48,6 @@ type ReminderItem = {
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const configured = Boolean(supabaseUrl && supabaseAnonKey);
-const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.toLowerCase().trim();
-
 const supabase = configured ? createClient(supabaseUrl!, supabaseAnonKey!) : null;
 
 const emojiReactions = ["❤️", "😊", "🔥", "👍", "😂"];
@@ -124,7 +122,6 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [isMediaUploading, setIsMediaUploading] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-  const [loginRole, setLoginRole] = useState<Role>("user");
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState("");
   const [authEmail, setAuthEmail] = useState("");
@@ -618,9 +615,6 @@ export default function App() {
         } else {
           setAuthError(error.message);
         }
-      } else if (loginRole === "admin" && adminEmail && normalizedEmail !== adminEmail) {
-        setAuthError("This account is not allowed to sign in as admin.");
-        await supabase.auth.signOut();
       }
     }
 
@@ -779,6 +773,7 @@ export default function App() {
     setProfile(updatedProfile);
     setProfiles((prev) => prev.map((entry) => (entry.user_id === updatedProfile.user_id ? { ...entry, ...updatedProfile } : entry)));
     setProfileStatus("Profile updated.");
+    setAuthError("");
   };
 
   const handleToggleBlocked = async (userId: string, blocked: boolean) => {
@@ -842,16 +837,24 @@ export default function App() {
       return;
     }
 
+    const current = messages.find((entry) => entry.id === messageId);
+    const cleaned = editingMessageText.trim();
+    if (!current || current.message === cleaned) {
+      setEditingMessageId(null);
+      setEditingMessageText("");
+      return;
+    }
+
     const editedAt = new Date().toISOString();
     let { error } = await supabase
       .from("messages")
-      .update({ message: editingMessageText.trim(), edited_at: editedAt })
+      .update({ message: cleaned, edited_at: editedAt })
       .eq("id", messageId);
 
     if (error && error.message.includes("edited_at")) {
       const fallback = await supabase
         .from("messages")
-        .update({ message: editingMessageText.trim() })
+        .update({ message: cleaned })
         .eq("id", messageId);
       error = fallback.error;
       if (!fallback.error) {
@@ -872,7 +875,7 @@ export default function App() {
         entry.id === messageId
           ? {
               ...entry,
-              message: editingMessageText.trim(),
+              message: cleaned,
               edited_at: entry.edited_at ?? editedAt,
             }
           : entry,
@@ -1040,68 +1043,60 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
   if (!session || !profile) {
     return (
-      <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100 transition-colors">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(34,211,238,0.2),transparent_40%),radial-gradient(circle_at_85%_10%,rgba(59,130,246,0.2),transparent_34%)]" />
+      <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(56,189,248,0.22),transparent_35%),radial-gradient(circle_at_85%_15%,rgba(99,102,241,0.3),transparent_36%),radial-gradient(circle_at_50%_85%,rgba(14,165,233,0.15),transparent_40%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(120deg,rgba(15,23,42,0.9),rgba(2,6,23,0.94))]" />
         <motion.section
           initial={{ opacity: 0, y: 32 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="relative mx-auto flex min-h-screen max-w-5xl items-center px-6 py-16"
+          transition={{ duration: 0.55 }}
+          className="relative mx-auto flex min-h-screen max-w-6xl items-center px-4 py-10 sm:px-6 md:py-16"
         >
-          <div className="grid w-full gap-12 md:grid-cols-[1.2fr_1fr] md:items-center">
-            <div className="space-y-5">
-              <p className="text-sm uppercase tracking-[0.18em] text-cyan-300">CrushConnect</p>
-              <h1 className="text-4xl font-semibold leading-tight md:text-5xl">Private messaging designed for meaningful connection.</h1>
-              <p className="max-w-xl text-slate-300">
-                A secure, role-based chat system built with Supabase Auth, Realtime, and row-level access control for clean one-to-one conversations.
+          <div className="grid w-full items-center gap-8 md:grid-cols-[1.1fr_minmax(0,420px)] md:gap-12">
+            <div className="space-y-6">
+              <p className="text-xs uppercase tracking-[0.24em] text-cyan-300/90">CrushConnect</p>
+              <h1 className="max-w-2xl text-4xl font-semibold leading-tight text-white sm:text-5xl md:text-6xl">
+                Secure chat made elegant, warm, and personal.
+              </h1>
+              <p className="max-w-xl text-sm leading-relaxed text-slate-300 sm:text-base">
+                Sign in once and your role is detected automatically. The app opens the correct workspace for user or admin,
+                with realtime messaging, presence, and private conversation history.
               </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-200/80 sm:text-sm">
+                <span className="rounded-full border border-white/15 px-3 py-1">Supabase Auth</span>
+                <span className="rounded-full border border-white/15 px-3 py-1">Realtime Typing</span>
+                <span className="rounded-full border border-white/15 px-3 py-1">Private Role Routing</span>
+              </div>
             </div>
 
             <form
               onSubmit={handleAuthSubmit}
-              className="space-y-4 rounded-2xl border border-white/15 bg-white/5 p-6 backdrop-blur"
+              className="space-y-4 rounded-3xl border border-white/15 bg-white/10 p-5 shadow-2xl shadow-cyan-900/25 backdrop-blur-xl sm:p-7"
             >
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthMode("login")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
+                  className={`w-1/2 rounded-xl px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
                 >
                   Login
                 </button>
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
+                  className={`w-1/2 rounded-xl px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-white/10 text-slate-100"}`}
                 >
                   Sign Up
                 </button>
               </div>
 
-              {authMode === "login" && (
-                <div className="flex gap-2 rounded-lg bg-white/5 p-1 text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setLoginRole("user")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "user" ? "bg-white text-slate-900" : "text-slate-300"}`}
-                  >
-                    User
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLoginRole("admin")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "admin" ? "bg-white text-slate-900" : "text-slate-300"}`}
-                  >
-                    Admin
-                  </button>
-                </div>
-              )}
+              <p className="text-xs text-slate-300">Role is auto-detected after login based on your profile record.</p>
 
               <input
                 required
                 value={authEmail}
                 onChange={(event) => setAuthEmail(event.target.value)}
-                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                 type="email"
                 placeholder="Email"
               />
@@ -1109,7 +1104,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 required
                 value={authPassword}
                 onChange={(event) => setAuthPassword(event.target.value)}
-                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                 type="password"
                 placeholder="Password"
               />
@@ -1130,25 +1125,25 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   <input
                     value={fullName}
                     onChange={(event) => setFullName(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                     placeholder="Full name"
                   />
                   <input
                     value={nickname}
                     onChange={(event) => setNickname(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                     placeholder="Nickname"
                   />
                   <input
                     value={interests}
                     onChange={(event) => setInterests(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                     placeholder="Interests"
                   />
                   <input
                     value={hobbies}
                     onChange={(event) => setHobbies(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-xl border border-white/20 bg-slate-950/70 px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                     placeholder="Hobbies"
                   />
                 </>
@@ -1160,7 +1155,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full rounded-lg bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-900 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded-xl bg-cyan-400 px-3 py-2.5 text-sm font-semibold text-slate-900 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? "Please wait..." : authMode === "signup" ? "Create Account" : "Secure Login"}
               </button>
@@ -1175,8 +1170,8 @@ VITE_ADMIN_EMAIL=your_admin_email`}
   const typingNames = Object.values(typingStatus).join(", ");
 
   return (
-    <main className="min-h-dvh overflow-x-hidden bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
-      <header className="border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80">
+    <main className="min-h-dvh overflow-x-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#eef4ff_55%,#eef6ff_100%)] text-slate-900 transition-colors dark:bg-[linear-gradient(180deg,#020617_0%,#0b1220_55%,#101a2c_100%)] dark:text-slate-100">
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/75">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-6">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-500">CrushConnect</p>
@@ -1187,13 +1182,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <span className="rounded-full border border-cyan-400/40 px-3 py-1 capitalize">{profile.role}</span>
             <span className="hidden text-slate-500 md:inline">Unread: {totalUnread}</span>
             <span className="hidden text-slate-500 md:inline">Online: {Object.keys(onlineUsers).length}</span>
-            <button
-              type="button"
-              onClick={() => setMobilePane((prev) => (prev === "chat" ? "panel" : "chat"))}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
-            >
-              {mobilePane === "chat" ? "Open Panel" : "Open Chat"}
-            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setMobilePane((prev) => (prev === "chat" ? "panel" : "chat"))}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
+              >
+                {mobilePane === "chat" ? "Open Panel" : "Open Chat"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1222,7 +1219,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               onClick={() => setShowProfilePanel((prev) => !prev)}
               className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700 md:px-3 md:py-1.5 md:text-sm"
             >
-              {showProfilePanel ? "Hide Profile" : "Show Profile"}
+              {isAdmin ? (showProfilePanel ? "Hide Profile" : "Show Profile") : "Profile"}
             </button>
             <button
               type="button"
@@ -1235,9 +1232,9 @@ VITE_ADMIN_EMAIL=your_admin_email`}
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-0 md:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block`}>
-          {isAdmin ? (
+      <div className={`mx-auto grid max-w-7xl gap-0 ${isAdmin ? "md:grid-cols-[340px_minmax(0,1fr)]" : "md:grid-cols-1"}`}>
+        {isAdmin && (
+          <aside className={`${mobilePane === "panel" ? "block" : "hidden"} border-r border-slate-200/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/75 md:block`}>
             <div className="space-y-4 p-4">
               <div>
                 <h2 className="text-sm font-semibold">Users</h2>
@@ -1391,75 +1388,10 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </div>
               )}
             </div>
-          ) : (
-            <div className="space-y-3 p-4">
-              {showProfilePanel && (
-                <>
-                  <h2 className="text-sm font-semibold">Profile</h2>
-                  <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <input value={hobbies} onChange={(e) => setHobbies(e.target.value)} placeholder="Hobbies" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <input value={favoriteColor} onChange={(e) => setFavoriteColor(e.target.value)} placeholder="Favorite color" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <input value={favoriteFood} onChange={(e) => setFavoriteFood(e.target.value)} placeholder="Favorite food" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short bio" className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-                  <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
-                    Save Profile
-                  </button>
-                </>
-              )}
-              <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
-                <h3 className="text-sm font-semibold">Personal Reminders</h3>
-                <input
-                  value={reminderInput}
-                  onChange={(event) => setReminderInput(event.target.value)}
-                  placeholder="Reminder text"
-                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
-                />
-                <input
-                  value={reminderDateTime}
-                  onChange={(event) => setReminderDateTime(event.target.value)}
-                  type="datetime-local"
-                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
-                />
-                <button type="button" onClick={handleAddReminder} className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300">
-                  Add Reminder
-                </button>
-                <div className="max-h-36 space-y-2 overflow-y-auto text-xs">
-                  {reminders.length === 0 && <p className="text-slate-500">No reminders yet.</p>}
-                  {reminders.map((entry) => (
-                    <div key={entry.id} className="rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
-                      <p className={entry.done ? "line-through opacity-60" : ""}>{entry.text}</p>
-                      <p className="text-slate-500">{formatDateTime(entry.dueAt)}</p>
-                      <button type="button" onClick={() => handleRemoveReminder(entry.id)} className="underline underline-offset-2">
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {mediaMessages.length > 0 && (
-                <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
-                  <h3 className="text-sm font-semibold">Recent Media</h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {mediaMessages.map((entry) => (
-                      <a key={entry.id} href={entry.media_url ?? "#"} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
-                        {entry.media_type === "video" ? (
-                          <video src={entry.media_url ?? undefined} className="h-14 w-full object-cover" muted />
-                        ) : (
-                          <img src={entry.media_url ?? undefined} alt="Shared media" className="h-14 w-full object-cover" loading="lazy" />
-                        )}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {profileStatus && <p className="text-xs text-slate-500">{profileStatus}</p>}
-            </div>
-          )}
-        </aside>
+          </aside>
+        )}
 
-        <section className={`${mobilePane === "chat" ? "flex" : "hidden"} h-[calc(100dvh-65px)] min-w-0 flex-col md:flex`}>
+        <section className={`${isAdmin ? (mobilePane === "chat" ? "flex" : "hidden") : "flex"} h-[calc(100dvh-70px)] min-w-0 flex-col md:h-[calc(100dvh-69px)] md:flex`}>
           <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800 md:px-6">
             <div className="flex items-center justify-between">
               <div>
@@ -1479,13 +1411,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setMobilePane("panel")}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
-              >
-                Back
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setMobilePane("panel")}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:hidden"
+                >
+                  Back
+                </button>
+              )}
 
               <div className="hidden items-center gap-2 md:flex">
                 <button
@@ -1567,7 +1501,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             </div>
           </div>
 
-          <div className="relative flex-1 space-y-3 overflow-y-auto bg-[linear-gradient(180deg,rgba(248,250,252,0.7)_0%,rgba(241,245,249,0.7)_100%)] px-3 py-3 dark:bg-[linear-gradient(180deg,rgba(2,6,23,0.5)_0%,rgba(15,23,42,0.55)_100%)] md:px-6 md:py-4">
+          <div className="relative flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_75%_0%,rgba(34,211,238,0.08),transparent_30%),linear-gradient(180deg,rgba(248,250,252,0.75)_0%,rgba(241,245,249,0.75)_100%)] px-2.5 py-3 dark:bg-[radial-gradient(circle_at_75%_0%,rgba(14,165,233,0.1),transparent_30%),linear-gradient(180deg,rgba(2,6,23,0.52)_0%,rgba(15,23,42,0.56)_100%)] md:px-6 md:py-4">
             {isMessagesLoading ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-500">
                 <span className="mr-2">Loading conversation</span>
@@ -1588,7 +1522,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     exit={{ opacity: 0, y: -6 }}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
-                    <div className={`max-w-[92%] rounded-2xl px-3 py-2 text-sm shadow-sm md:max-w-[75%] md:px-4 ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
+                    <div className={`max-w-[94%] rounded-2xl px-3 py-2 text-sm shadow-[0_8px_24px_-18px_rgba(15,23,42,0.9)] md:max-w-[76%] md:px-4 ${mine ? "bg-gradient-to-br from-cyan-400 to-cyan-500 text-slate-950" : "bg-white/95 dark:bg-slate-800/95"}`}>
                       {isEditing ? (
                         <div className="space-y-2">
                           <textarea
@@ -1660,7 +1594,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <div ref={messageEndRef} />
           </div>
 
-          <div className="border-t border-slate-200 bg-slate-100/95 px-3 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 md:px-6">
+          <div className="border-t border-slate-200/80 bg-white/90 px-3 py-3 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/85 md:px-6">
             <div className="mb-2 min-h-5 text-xs text-slate-500">
               {typingNames ? (
                 <span className="inline-flex items-center gap-2">
@@ -1765,10 +1699,87 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </div>
             </div>
             <p className="mt-2 text-[11px] text-slate-500">{draft.length} chars. Press Enter to send, Shift+Enter for newline.</p>
+            {profileStatus && <p className="mt-1 text-xs text-cyan-600 dark:text-cyan-300">{profileStatus}</p>}
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
           </div>
         </section>
       </div>
+
+      {!isAdmin && showProfilePanel && (
+        <div className="fixed inset-0 z-30 bg-slate-950/60 p-3 backdrop-blur-sm md:p-6" onClick={() => setShowProfilePanel(false)}>
+          <div
+            className="mx-auto h-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-semibold">Your Profile</h2>
+              <button type="button" onClick={() => setShowProfilePanel(false)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs dark:border-slate-700">
+                Close
+              </button>
+            </div>
+            <div className="space-y-2">
+              <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <input value={hobbies} onChange={(e) => setHobbies(e.target.value)} placeholder="Hobbies" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <input value={favoriteColor} onChange={(e) => setFavoriteColor(e.target.value)} placeholder="Favorite color" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <input value={favoriteFood} onChange={(e) => setFavoriteFood(e.target.value)} placeholder="Favorite food" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short bio" className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+              <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
+                Save Profile
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+              <h3 className="text-sm font-semibold">Personal Reminders</h3>
+              <input
+                value={reminderInput}
+                onChange={(event) => setReminderInput(event.target.value)}
+                placeholder="Reminder text"
+                className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+              />
+              <input
+                value={reminderDateTime}
+                onChange={(event) => setReminderDateTime(event.target.value)}
+                type="datetime-local"
+                className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+              />
+              <button type="button" onClick={handleAddReminder} className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300">
+                Add Reminder
+              </button>
+              <div className="max-h-40 space-y-2 overflow-y-auto text-xs">
+                {reminders.length === 0 && <p className="text-slate-500">No reminders yet.</p>}
+                {reminders.map((entry) => (
+                  <div key={entry.id} className="rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                    <p className={entry.done ? "line-through opacity-60" : ""}>{entry.text}</p>
+                    <p className="text-slate-500">{formatDateTime(entry.dueAt)}</p>
+                    <button type="button" onClick={() => handleRemoveReminder(entry.id)} className="underline underline-offset-2">
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {mediaMessages.length > 0 && (
+              <div className="mt-4 space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                <h3 className="text-sm font-semibold">Recent Media</h3>
+                <div className="grid grid-cols-3 gap-2">
+                  {mediaMessages.map((entry) => (
+                    <a key={entry.id} href={entry.media_url ?? "#"} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
+                      {entry.media_type === "video" ? (
+                        <video src={entry.media_url ?? undefined} className="h-16 w-full object-cover" muted />
+                      ) : (
+                        <img src={entry.media_url ?? undefined} alt="Shared media" className="h-16 w-full object-cover" loading="lazy" />
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
