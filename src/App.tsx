@@ -27,12 +27,20 @@ type Message = {
   message: string;
   timestamp: string;
   seen_status: boolean;
+  edited_at?: string | null;
 };
 
 type OnlinePresence = {
   user_id: string;
   name: string;
   role: Role;
+};
+
+type ReminderItem = {
+  id: string;
+  text: string;
+  dueAt: string;
+  done: boolean;
 };
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -49,6 +57,8 @@ const quickIcebreakers = [
   "What is your current favorite song?",
   "If we plan a chill day, what should we do first?",
 ];
+
+const quickReplies = ["Noted", "Tell me more", "I like that", "Give me 5 mins", "Sounds good"];
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -120,6 +130,20 @@ export default function App() {
   const [bio, setBio] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const [userFilter, setUserFilter] = useState<"all" | "online" | "unread">("all");
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
+  const [favoriteIds, setFavoriteIds] = useState<Record<string, boolean>>({});
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [notificationEnabled, setNotificationEnabled] = useState(false);
+  const [muteNotifications, setMuteNotifications] = useState(false);
+  const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  const [reminderInput, setReminderInput] = useState("");
+  const [reminderDateTime, setReminderDateTime] = useState("");
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -134,13 +158,45 @@ export default function App() {
     return Object.values(unreadByUser).reduce((sum, count) => sum + count, 0);
   }, [unreadByUser]);
 
+  const visibleUsers = useMemo(() => {
+    const base = profiles.filter((entry) => entry.role === "user");
+    return base
+      .filter((entry) => {
+        if (userFilter === "online") {
+          return Boolean(onlineUsers[entry.user_id]);
+        }
+        if (userFilter === "unread") {
+          return (unreadByUser[entry.user_id] ?? 0) > 0;
+        }
+        return true;
+      })
+      .filter((entry) => {
+        const target = `${entry.nickname ?? ""} ${entry.full_name ?? ""} ${entry.email ?? ""}`.toLowerCase();
+        return target.includes(userSearch.trim().toLowerCase());
+      });
+  }, [profiles, userFilter, unreadByUser, userSearch, onlineUsers]);
+
+  const messageStats = useMemo(() => {
+    const words = messages.reduce((sum, entry) => sum + entry.message.trim().split(/\s+/).filter(Boolean).length, 0);
+    const mine = messages.filter((entry) => entry.sender_id === currentUserId).length;
+    const today = new Date().toDateString();
+    const todayCount = messages.filter((entry) => new Date(entry.timestamp).toDateString() === today).length;
+    return {
+      total: messages.length,
+      mine,
+      avgWords: messages.length ? Math.round(words / messages.length) : 0,
+      todayCount,
+    };
+  }, [messages, currentUserId]);
+
   const filteredMessages = useMemo(() => {
-    if (!searchTerm.trim()) {
-      return messages;
-    }
     const query = searchTerm.trim().toLowerCase();
-    return messages.filter((entry) => entry.message.toLowerCase().includes(query));
-  }, [messages, searchTerm]);
+    return messages.filter((entry) => {
+      const matchesText = query ? entry.message.toLowerCase().includes(query) : true;
+      const matchesFavorite = showFavoritesOnly ? Boolean(favoriteIds[entry.id]) : true;
+      return matchesText && matchesFavorite;
+    });
+  }, [messages, searchTerm, showFavoritesOnly, favoriteIds]);
 
   useEffect(() => {
     // Keep auth screen consistently dark while preserving user theme preference after login.
@@ -175,6 +231,12 @@ export default function App() {
     return () => {
       data.subscription.unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    if ("Notification" in window) {
+      setNotificationEnabled(Notification.permission === "granted");
+    }
   }, []);
 
   useEffect(() => {
@@ -300,7 +362,13 @@ export default function App() {
           ...prev,
         ].slice(0, 8));
 
-        if (newMessage.receiver_id === session.user.id && document.visibilityState !== "visible" && "Notification" in window) {
+        if (
+          notificationEnabled &&
+          !muteNotifications &&
+          newMessage.receiver_id === session.user.id &&
+          document.visibilityState !== "visible" &&
+          "Notification" in window
+        ) {
           if (Notification.permission === "granted") {
             new Notification("New message", { body: newMessage.message });
           } else if (Notification.permission === "default") {
@@ -317,7 +385,7 @@ export default function App() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [session?.user.id, activeRecipientId]);
+  }, [session?.user.id, activeRecipientId, notificationEnabled, muteNotifications]);
 
   useEffect(() => {
     if (!supabase || !session?.user.id || !activeRecipientId) {
@@ -391,8 +459,10 @@ export default function App() {
   }, [session?.user.id, activeRecipientId]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (autoScroll) {
+      messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, autoScroll]);
 
   useEffect(() => {
     if (!session?.user.id || !activeRecipientId) {
@@ -414,6 +484,59 @@ export default function App() {
       window.localStorage.removeItem(key);
     }
   }, [draft, session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!session?.user.id || !activeRecipientId) {
+      setFavoriteIds({});
+      return;
+    }
+    const key = `crushconnect-favorites:${session.user.id}:${activeRecipientId}`;
+    const saved = window.localStorage.getItem(key);
+    setFavoriteIds(saved ? (JSON.parse(saved) as Record<string, boolean>) : {});
+  }, [session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!session?.user.id || !activeRecipientId) {
+      return;
+    }
+    const key = `crushconnect-favorites:${session.user.id}:${activeRecipientId}`;
+    window.localStorage.setItem(key, JSON.stringify(favoriteIds));
+  }, [favoriteIds, session?.user.id, activeRecipientId]);
+
+  useEffect(() => {
+    if (!session?.user.id) {
+      setReminders([]);
+      return;
+    }
+    const key = `crushconnect-reminders:${session.user.id}`;
+    const saved = window.localStorage.getItem(key);
+    setReminders(saved ? (JSON.parse(saved) as ReminderItem[]) : []);
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!session?.user.id) {
+      return;
+    }
+    const key = `crushconnect-reminders:${session.user.id}`;
+    window.localStorage.setItem(key, JSON.stringify(reminders));
+  }, [reminders, session?.user.id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setReminders((prev) => {
+        const now = Date.now();
+        return prev.map((entry) => {
+          if (!entry.done && new Date(entry.dueAt).getTime() <= now) {
+            return { ...entry, done: true };
+          }
+          return entry;
+        });
+      });
+    }, 30000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -506,10 +629,12 @@ export default function App() {
       return;
     }
 
+    const composedMessage = replyTo ? `Reply to: ${replyTo.message}\n${draft.trim()}` : draft.trim();
+
     const payload = {
       sender_id: session.user.id,
       receiver_id: activeRecipientId,
-      message: draft.trim(),
+      message: composedMessage,
       timestamp: new Date().toISOString(),
       seen_status: false,
     };
@@ -528,6 +653,7 @@ export default function App() {
     if (data) {
       setMessages((prev) => (prev.some((entry) => entry.id === data.id) ? prev : [...prev, data]));
     }
+    setReplyTo(null);
     setIsSending(false);
   };
 
@@ -609,6 +735,110 @@ export default function App() {
       return;
     }
     setMessages((prev) => prev.filter((entry) => entry.id !== messageId));
+  };
+
+  const handleStartEditMessage = (entry: Message) => {
+    setEditingMessageId(entry.id);
+    setEditingMessageText(entry.message);
+  };
+
+  const handleSaveEditMessage = async (messageId: string) => {
+    if (!supabase || !editingMessageText.trim()) {
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("messages")
+      .update({ message: editingMessageText.trim(), edited_at: new Date().toISOString() })
+      .eq("id", messageId)
+      .select("*")
+      .single<Message>();
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+    if (data) {
+      setMessages((prev) => prev.map((entry) => (entry.id === data.id ? data : entry)));
+    }
+    setEditingMessageId(null);
+    setEditingMessageText("");
+  };
+
+  const toggleFavoriteMessage = (messageId: string) => {
+    setFavoriteIds((prev) => ({ ...prev, [messageId]: !prev[messageId] }));
+  };
+
+  const copyMessage = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setProfileStatus("Message copied.");
+    } catch {
+      setProfileStatus("Copy failed on this device/browser.");
+    }
+  };
+
+  const handleRequestNotifications = async () => {
+    if (!("Notification" in window)) {
+      setAuthError("Notifications are not supported on this browser.");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationEnabled(permission === "granted");
+    if (permission !== "granted") {
+      setAuthError("Notification permission was not granted.");
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!supabase || !authEmail.trim()) {
+      setAuthError("Enter your email first to reset password.");
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim().toLowerCase(), {
+      redirectTo: window.location.origin,
+    });
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+    setAuthInfo("Password reset link sent. Check your email inbox.");
+  };
+
+  const handleAddReminder = () => {
+    if (!reminderInput.trim() || !reminderDateTime) {
+      return;
+    }
+    setReminders((prev) => [
+      {
+        id: crypto.randomUUID(),
+        text: reminderInput.trim(),
+        dueAt: reminderDateTime,
+        done: false,
+      },
+      ...prev,
+    ]);
+    setReminderInput("");
+    setReminderDateTime("");
+  };
+
+  const handleRemoveReminder = (id: string) => {
+    setReminders((prev) => prev.filter((entry) => entry.id !== id));
+  };
+
+  const handleSendWelcome = async () => {
+    if (!supabase || !isAdmin || !session?.user.id || !selectedUserId) {
+      return;
+    }
+    const { error } = await supabase.from("messages").insert({
+      sender_id: session.user.id,
+      receiver_id: selectedUserId,
+      message: "Welcome to CrushConnect. I am happy to chat with you here.",
+      timestamp: new Date().toISOString(),
+      seen_status: false,
+    });
+    if (error) {
+      setAuthError(error.message);
+    }
   };
 
   const handleExportChat = () => {
@@ -764,6 +994,17 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 type="password"
                 placeholder="Password"
               />
+              {authMode === "login" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleResetPassword();
+                  }}
+                  className="text-xs text-cyan-200 underline underline-offset-2"
+                >
+                  Forgot password?
+                </button>
+              )}
 
               {authMode === "signup" && (
                 <>
@@ -829,10 +1070,33 @@ VITE_ADMIN_EMAIL=your_admin_email`}
             <span className="hidden text-slate-500 md:inline">Online: {Object.keys(onlineUsers).length}</span>
             <button
               type="button"
+              onClick={() => {
+                void handleRequestNotifications();
+              }}
+              className="hidden rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:inline"
+            >
+              {notificationEnabled ? "Notifications On" : "Enable Alerts"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMuteNotifications((prev) => !prev)}
+              className="hidden rounded-lg border border-slate-300 px-3 py-1.5 text-xs dark:border-slate-700 md:inline"
+            >
+              {muteNotifications ? "Unmute" : "Mute"}
+            </button>
+            <button
+              type="button"
               onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
               className="rounded-lg border border-slate-300 px-3 py-1.5 dark:border-slate-700"
             >
               {theme === "dark" ? "Light" : "Dark"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowProfilePanel((prev) => !prev)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 dark:border-slate-700"
+            >
+              {showProfilePanel ? "Hide Profile" : "Show Profile"}
             </button>
             <button
               type="button"
@@ -855,9 +1119,27 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </div>
 
               <div className="space-y-2">
-                {profiles
-                  .filter((entry) => entry.role === "user")
-                  .map((entry) => {
+                <input
+                  value={userSearch}
+                  onChange={(event) => setUserSearch(event.target.value)}
+                  placeholder="Search users"
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs dark:border-slate-700"
+                />
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <button type="button" onClick={() => setUserFilter("all")} className={`rounded-lg px-2 py-1 ${userFilter === "all" ? "bg-cyan-500 text-slate-950" : "border border-slate-300 dark:border-slate-700"}`}>
+                    All
+                  </button>
+                  <button type="button" onClick={() => setUserFilter("online")} className={`rounded-lg px-2 py-1 ${userFilter === "online" ? "bg-cyan-500 text-slate-950" : "border border-slate-300 dark:border-slate-700"}`}>
+                    Online
+                  </button>
+                  <button type="button" onClick={() => setUserFilter("unread")} className={`rounded-lg px-2 py-1 ${userFilter === "unread" ? "bg-cyan-500 text-slate-950" : "border border-slate-300 dark:border-slate-700"}`}>
+                    Unread
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {visibleUsers.map((entry) => {
                     const isOnline = Boolean(onlineUsers[entry.user_id]);
                     const isSelected = selectedUserId === entry.user_id;
                     return (
@@ -899,6 +1181,15 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   >
                     Delete User
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleSendWelcome();
+                    }}
+                    className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300"
+                  >
+                    Send Welcome Message
+                  </button>
                 </div>
               )}
 
@@ -908,6 +1199,38 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               </div>
 
               <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+                <h3 className="text-sm font-semibold">Reminders</h3>
+                <input
+                  value={reminderInput}
+                  onChange={(event) => setReminderInput(event.target.value)}
+                  placeholder="Reminder text"
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+                />
+                <input
+                  value={reminderDateTime}
+                  onChange={(event) => setReminderDateTime(event.target.value)}
+                  type="datetime-local"
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+                />
+                <button type="button" onClick={handleAddReminder} className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300">
+                  Add Reminder
+                </button>
+                <div className="max-h-36 space-y-2 overflow-y-auto text-xs">
+                  {reminders.length === 0 && <p className="text-slate-500">No reminders yet.</p>}
+                  {reminders.map((entry) => (
+                    <div key={entry.id} className="rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                      <p className={entry.done ? "line-through opacity-60" : ""}>{entry.text}</p>
+                      <p className="text-slate-500">{formatDateTime(entry.dueAt)}</p>
+                      <button type="button" onClick={() => handleRemoveReminder(entry.id)} className="underline underline-offset-2">
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {showProfilePanel && (
+                <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
                 <h3 className="text-sm font-semibold">My Profile</h3>
                 <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
                 <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
@@ -919,21 +1242,56 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
                   Save Profile
                 </button>
-              </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-3 p-4">
-              <h2 className="text-sm font-semibold">Profile</h2>
-              <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <input value={hobbies} onChange={(e) => setHobbies(e.target.value)} placeholder="Hobbies" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <input value={favoriteColor} onChange={(e) => setFavoriteColor(e.target.value)} placeholder="Favorite color" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <input value={favoriteFood} onChange={(e) => setFavoriteFood(e.target.value)} placeholder="Favorite food" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short bio" className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
-              <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
-                Save Profile
-              </button>
+              {showProfilePanel && (
+                <>
+                  <h2 className="text-sm font-semibold">Profile</h2>
+                  <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Nickname" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <input value={interests} onChange={(e) => setInterests(e.target.value)} placeholder="Interests" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <input value={hobbies} onChange={(e) => setHobbies(e.target.value)} placeholder="Hobbies" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <input value={favoriteColor} onChange={(e) => setFavoriteColor(e.target.value)} placeholder="Favorite color" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <input value={favoriteFood} onChange={(e) => setFavoriteFood(e.target.value)} placeholder="Favorite food" className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short bio" className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700" />
+                  <button type="button" onClick={handleProfileSave} className="w-full rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950">
+                    Save Profile
+                  </button>
+                </>
+              )}
+              <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                <h3 className="text-sm font-semibold">Personal Reminders</h3>
+                <input
+                  value={reminderInput}
+                  onChange={(event) => setReminderInput(event.target.value)}
+                  placeholder="Reminder text"
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+                />
+                <input
+                  value={reminderDateTime}
+                  onChange={(event) => setReminderDateTime(event.target.value)}
+                  type="datetime-local"
+                  className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm dark:border-slate-700"
+                />
+                <button type="button" onClick={handleAddReminder} className="w-full rounded-lg border border-cyan-300 px-3 py-2 text-sm text-cyan-700 dark:border-cyan-500/40 dark:text-cyan-300">
+                  Add Reminder
+                </button>
+                <div className="max-h-36 space-y-2 overflow-y-auto text-xs">
+                  {reminders.length === 0 && <p className="text-slate-500">No reminders yet.</p>}
+                  {reminders.map((entry) => (
+                    <div key={entry.id} className="rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                      <p className={entry.done ? "line-through opacity-60" : ""}>{entry.text}</p>
+                      <p className="text-slate-500">{formatDateTime(entry.dueAt)}</p>
+                      <button type="button" onClick={() => handleRemoveReminder(entry.id)} className="underline underline-offset-2">
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
               {profileStatus && <p className="text-xs text-slate-500">{profileStatus}</p>}
             </div>
           )}
@@ -962,6 +1320,20 @@ VITE_ADMIN_EMAIL=your_admin_email`}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setShowFavoritesOnly((prev) => !prev)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700"
+                >
+                  {showFavoritesOnly ? "All Messages" : "Favorites"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoScroll((prev) => !prev)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700"
+                >
+                  Auto Scroll: {autoScroll ? "On" : "Off"}
+                </button>
+                <button
+                  type="button"
                   onClick={handleExportChat}
                   disabled={!messages.length}
                   className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-slate-700"
@@ -986,6 +1358,16 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 placeholder="Search this conversation"
                 className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 dark:border-slate-700"
               />
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                <p>
+                  Total: {messageStats.total} | Mine: {messageStats.mine} | Today: {messageStats.todayCount} | Avg words: {messageStats.avgWords}
+                </p>
+                {searchTerm && (
+                  <button type="button" onClick={() => setSearchTerm("")} className="underline underline-offset-2">
+                    Clear Search
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1000,6 +1382,8 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 {filteredMessages.map((entry) => {
                 const mine = entry.sender_id === currentUserId;
                 const canDelete = mine || isAdmin;
+                const isEditing = editingMessageId === entry.id;
+                const isFavorite = Boolean(favoriteIds[entry.id]);
                 return (
                   <motion.div
                     key={entry.id}
@@ -1009,15 +1393,52 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     className={`flex ${mine ? "justify-end" : "justify-start"}`}
                   >
                     <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm shadow-sm ${mine ? "bg-cyan-500 text-slate-950" : "bg-white dark:bg-slate-800"}`}>
-                      <p className="whitespace-pre-wrap">{entry.message}</p>
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editingMessageText}
+                            onChange={(event) => setEditingMessageText(event.target.value)}
+                            className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-2 py-1 text-xs dark:border-slate-600"
+                          />
+                          <div className="flex gap-2 text-[11px]">
+                            <button type="button" onClick={() => void handleSaveEditMessage(entry.id)} className="underline underline-offset-2">
+                              Save
+                            </button>
+                            <button type="button" onClick={() => setEditingMessageId(null)} className="underline underline-offset-2">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap">{entry.message}</p>
+                      )}
                       <div className="mt-1 flex items-center justify-between gap-3 text-[11px] opacity-80">
-                        <span>{formatTime(entry.timestamp)}</span>
+                        <span>
+                          {formatTime(entry.timestamp)}
+                          {entry.edited_at ? " (edited)" : ""}
+                        </span>
                         {mine && <span>{entry.seen_status ? "Seen" : "Delivered"}</span>}
-                        {canDelete && (
-                          <button type="button" onClick={() => handleDeleteMessage(entry.id, canDelete)} className="text-[10px] underline underline-offset-2">
-                            Delete
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => toggleFavoriteMessage(entry.id)} className="text-[10px] underline underline-offset-2">
+                            {isFavorite ? "Unstar" : "Star"}
                           </button>
-                        )}
+                          <button type="button" onClick={() => setReplyTo(entry)} className="text-[10px] underline underline-offset-2">
+                            Reply
+                          </button>
+                          <button type="button" onClick={() => void copyMessage(entry.message)} className="text-[10px] underline underline-offset-2">
+                            Copy
+                          </button>
+                          {mine && !isEditing && (
+                            <button type="button" onClick={() => handleStartEditMessage(entry)} className="text-[10px] underline underline-offset-2">
+                              Edit
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button type="button" onClick={() => handleDeleteMessage(entry.id, canDelete)} className="text-[10px] underline underline-offset-2">
+                              Delete
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </motion.div>
@@ -1053,6 +1474,16 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   {prompt}
                 </button>
               ))}
+              {quickReplies.map((entry) => (
+                <button
+                  key={entry}
+                  type="button"
+                  onClick={() => handleDraftChange(entry)}
+                  className="rounded-full border border-slate-300 px-2.5 py-1 text-xs dark:border-slate-700"
+                >
+                  {entry}
+                </button>
+              ))}
               {emojiReactions.map((emoji) => (
                 <button
                   key={emoji}
@@ -1064,19 +1495,27 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 </button>
               ))}
             </div>
+            {replyTo && (
+              <div className="mb-2 flex items-center justify-between rounded-lg border border-cyan-300/50 bg-cyan-50 px-3 py-2 text-xs text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-200">
+                <span className="truncate">Replying to: {replyTo.message}</span>
+                <button type="button" onClick={() => setReplyTo(null)} className="underline underline-offset-2">
+                  Cancel
+                </button>
+              </div>
+            )}
             <div className="flex items-center gap-2">
-              <input
+              <textarea
                 value={draft}
                 onChange={(event) => handleDraftChange(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") {
+                  if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void handleSendMessage();
                   }
                 }}
                 placeholder={activeRecipientId ? "Type your message..." : "Select a conversation"}
                 disabled={!activeRecipientId}
-                className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700"
+                className="h-20 w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-cyan-500 disabled:opacity-60 dark:border-slate-700"
               />
               <button
                 type="button"
@@ -1096,6 +1535,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 )}
               </button>
             </div>
+            <p className="mt-2 text-[11px] text-slate-500">{draft.length} chars. Press Enter to send, Shift+Enter for newline.</p>
             {authError && <p className="mt-2 text-xs text-rose-500">{authError}</p>}
           </div>
         </section>
