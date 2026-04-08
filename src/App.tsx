@@ -61,7 +61,16 @@ function formatDateTime(value: string) {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") {
+      return "light";
+    }
+    const savedTheme = window.localStorage.getItem("crushconnect-theme");
+    if (savedTheme === "light" || savedTheme === "dark") {
+      return savedTheme;
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -95,7 +104,8 @@ export default function App() {
 
   const isAdmin = profile?.role === "admin";
   const currentUserId = session?.user.id ?? "";
-  const activeRecipientId = isAdmin ? selectedUserId : profiles.find((p) => p.role === "admin")?.user_id ?? "";
+  const activeAdminProfile = profiles.find((entry) => entry.role === "admin");
+  const activeRecipientId = isAdmin ? selectedUserId : activeAdminProfile?.user_id ?? "";
 
   const totalUnread = useMemo(() => {
     return Object.values(unreadByUser).reduce((sum, count) => sum + count, 0);
@@ -103,6 +113,8 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem("crushconnect-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -267,7 +279,7 @@ export default function App() {
 
         const otherId = newMessage.sender_id === session.user.id ? newMessage.receiver_id : newMessage.sender_id;
         if (otherId === activeRecipientId) {
-          setMessages((prev) => [...prev, newMessage]);
+          setMessages((prev) => (prev.some((entry) => entry.id === newMessage.id) ? prev : [...prev, newMessage]));
         } else if (newMessage.receiver_id === session.user.id) {
           setUnreadByUser((prev) => ({ ...prev, [newMessage.sender_id]: (prev[newMessage.sender_id] ?? 0) + 1 }));
         }
@@ -373,13 +385,20 @@ export default function App() {
     if (!supabase) {
       return;
     }
+    const normalizedEmail = authEmail.trim().toLowerCase();
+
+    if (!normalizedEmail) {
+      setAuthError("Email is required.");
+      return;
+    }
+
     setAuthError("");
     setAuthInfo("");
     setIsSubmitting(true);
 
     if (authMode === "signup") {
       const { data, error } = await supabase.auth.signUp({
-        email: authEmail,
+        email: normalizedEmail,
         password: authPassword,
         options: {
           data: {
@@ -398,13 +417,17 @@ export default function App() {
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({
-        email: authEmail,
+        email: normalizedEmail,
         password: authPassword,
       });
 
       if (error) {
-        setAuthError(error.message);
-      } else if (loginRole === "admin" && adminEmail && authEmail.toLowerCase() !== adminEmail) {
+        if (error.message.toLowerCase().includes("invalid login credentials")) {
+          setAuthError("Invalid login credentials. Check email/password, and verify your email if confirmation is enabled.");
+        } else {
+          setAuthError(error.message);
+        }
+      } else if (loginRole === "admin" && adminEmail && normalizedEmail !== adminEmail) {
         setAuthError("This account is not allowed to sign in as admin.");
         await supabase.auth.signOut();
       }
@@ -459,9 +482,14 @@ export default function App() {
     setDraft("");
     sendTypingSignal(false);
 
-    const { error } = await supabase.from("messages").insert(payload);
+    const { data, error } = await supabase.from("messages").insert(payload).select("*").single<Message>();
     if (error) {
       setAuthError(error.message);
+      return;
+    }
+
+    if (data) {
+      setMessages((prev) => (prev.some((entry) => entry.id === data.id) ? prev : [...prev, data]));
     }
   };
 
@@ -606,54 +634,66 @@ VITE_ADMIN_EMAIL=your_admin_email`}
 
   if (!session || !profile) {
     return (
-      <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.28),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(56,189,248,0.2),transparent_35%)]" />
+      <main className="relative min-h-screen overflow-hidden bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(14,165,233,0.18),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(99,102,241,0.18),transparent_35%)] dark:bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.28),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(56,189,248,0.2),transparent_35%)]" />
+        <div className="relative mx-auto flex max-w-5xl justify-end px-6 pt-6">
+          <button
+            type="button"
+            onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+            className="rounded-lg border border-slate-300 bg-white/75 px-3 py-1.5 text-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/70"
+          >
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
+        </div>
         <motion.section
           initial={{ opacity: 0, y: 32 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="relative mx-auto flex min-h-screen max-w-5xl items-center px-6 py-16"
+          className="relative mx-auto flex min-h-[calc(100vh-64px)] max-w-5xl items-center px-6 py-16"
         >
           <div className="grid w-full gap-12 md:grid-cols-[1.2fr_1fr] md:items-center">
             <div className="space-y-5">
               <p className="text-sm uppercase tracking-[0.18em] text-cyan-300">CrushConnect</p>
               <h1 className="text-4xl font-semibold leading-tight md:text-5xl">Private messaging designed for meaningful connection.</h1>
-              <p className="max-w-xl text-slate-300">
+              <p className="max-w-xl text-slate-600 dark:text-slate-300">
                 A secure, role-based chat system built with Supabase Auth, Realtime, and row-level access control for clean one-to-one conversations.
               </p>
             </div>
 
-            <form onSubmit={handleAuthSubmit} className="space-y-4 rounded-2xl border border-white/15 bg-white/5 p-6 backdrop-blur">
+            <form
+              onSubmit={handleAuthSubmit}
+              className="space-y-4 rounded-2xl border border-slate-300/80 bg-white/85 p-6 backdrop-blur dark:border-white/15 dark:bg-white/5"
+            >
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthMode("login")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-white/10"}`}
+                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "login" ? "bg-cyan-400 text-slate-900" : "bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-100"}`}
                 >
                   Login
                 </button>
                 <button
                   type="button"
                   onClick={() => setAuthMode("signup")}
-                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-white/10"}`}
+                  className={`w-1/2 rounded-lg px-3 py-2 text-sm ${authMode === "signup" ? "bg-cyan-400 text-slate-900" : "bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-100"}`}
                 >
                   Sign Up
                 </button>
               </div>
 
               {authMode === "login" && (
-                <div className="flex gap-2 rounded-lg bg-white/5 p-1 text-sm">
+                <div className="flex gap-2 rounded-lg bg-slate-100 p-1 text-sm dark:bg-white/5">
                   <button
                     type="button"
                     onClick={() => setLoginRole("user")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "user" ? "bg-white text-slate-900" : "text-slate-300"}`}
+                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "user" ? "bg-white text-slate-900" : "text-slate-500 dark:text-slate-300"}`}
                   >
                     User
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginRole("admin")}
-                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "admin" ? "bg-white text-slate-900" : "text-slate-300"}`}
+                    className={`w-1/2 rounded-md py-1.5 ${loginRole === "admin" ? "bg-white text-slate-900" : "text-slate-500 dark:text-slate-300"}`}
                   >
                     Admin
                   </button>
@@ -664,7 +704,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 required
                 value={authEmail}
                 onChange={(event) => setAuthEmail(event.target.value)}
-                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                 type="email"
                 placeholder="Email"
               />
@@ -672,7 +712,7 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                 required
                 value={authPassword}
                 onChange={(event) => setAuthPassword(event.target.value)}
-                className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                 type="password"
                 placeholder="Password"
               />
@@ -682,25 +722,25 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                   <input
                     value={fullName}
                     onChange={(event) => setFullName(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                     placeholder="Full name"
                   />
                   <input
                     value={nickname}
                     onChange={(event) => setNickname(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                     placeholder="Nickname"
                   />
                   <input
                     value={interests}
                     onChange={(event) => setInterests(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                     placeholder="Interests"
                   />
                   <input
                     value={hobbies}
                     onChange={(event) => setHobbies(event.target.value)}
-                    className="w-full rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/20 dark:bg-slate-950/70"
                     placeholder="Hobbies"
                   />
                 </>
@@ -848,7 +888,11 @@ VITE_ADMIN_EMAIL=your_admin_email`}
                     : `Chat with ${profiles.find((entry) => entry.role === "admin")?.nickname || "Admin"}`}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  {activeRecipientId && onlineUsers[activeRecipientId] ? "Online now" : "Offline"}
+                  {activeRecipientId && onlineUsers[activeRecipientId]
+                    ? "Online now"
+                    : activeRecipientId
+                      ? "Offline now. You can still send messages."
+                      : "No recipient available yet."}
                 </p>
               </div>
 
